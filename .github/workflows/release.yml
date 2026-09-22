@@ -1,0 +1,77 @@
+# Builds the package when a release is published and attaches the sdist and
+# wheel to that release. Runs on windows-latest, matching ci.yml, so a green
+# CI run predicts a green release build.
+name: Release
+
+on:
+  release:
+    types: [published]
+  # Also runnable by hand from the Actions tab, to check the build without
+  # cutting a release.
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed to upload assets onto the release
+
+jobs:
+  package:
+    runs-on: windows-latest
+    defaults:
+      run:
+        # bash on Windows too: the upload step relies on glob expansion, which
+        # PowerShell does not do for arguments to external commands.
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Verify the tag matches the package version
+        # A mismatch would attach files named after the wrong version. Checked
+        # before anything is built; skipped on manual runs, which have no tag.
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          tag_version="${TAG#v}"
+          if [ -z "$tag_version" ]; then
+            echo "::error::No tag name reached this step, so nothing can be checked against it."
+            echo "Refusing to build a release blind."
+            exit 1
+          fi
+          pkg_version=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])")
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag $TAG declares $tag_version but pyproject.toml says $pkg_version"
+            echo "Bump version in pyproject.toml to $tag_version, push, then delete and re-create the tag."
+            exit 1
+          fi
+          echo "tag $TAG matches pyproject.toml version $pkg_version"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ".[dev]" build twine
+
+      - name: Lint and type check
+        run: |
+          python -m ruff check .
+          python -m pyright
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Check package metadata
+        run: twine check dist/*
+
+      - name: Attach artifacts to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # --clobber so re-running the workflow on the same release replaces
+        # the assets instead of failing on the second attempt.
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber

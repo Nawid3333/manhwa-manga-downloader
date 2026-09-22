@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDEs / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Env files
+.env
+
+# Logs
+logs/
+*.log
+
+# Project data (generated at runtime: downloads + logs, all locations)
+/data/
+/downloads/
+logs/
+series_*/
+
+# One-off probes and scratch scripts
+_probe*.py
+_probe*.mjs

@@ -1,0 +1,20 @@
+# Dependabot: weekly pip bumps for requirements.txt + pyproject dev extras,
+# and weekly action-tag updates (actions are pinned to major tags, so a new
+# major arrives as a PR decision rather than a surprise).
+version: 2
+updates:
+  - package-ecosystem: 'pip'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    open-pull-requests-limit: 10
+    labels:
+      - 'dependencies'
+
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    open-pull-requests-limit: 5
+    labels:
+      - 'dependencies'

@@ -1,0 +1,45 @@
+# Runs lint + type check on every push and pull request. There is no test
+# suite yet (the code talks to live sites, which CI cannot do reliably), so
+# this workflow is the whole gate for now; a pytest step slots in below.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          # The floor declared in requires-python: testing the oldest
+          # supported version is what catches a newer-only API slipping in.
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ".[dev]"
+
+      - name: Lint
+        run: python -m ruff check .
+
+      - name: Format
+        run: python -m ruff format --check .
+
+      - name: Type check
+        run: python -m pyright
+
+      # - name: Test
+      #   run: python -m pytest

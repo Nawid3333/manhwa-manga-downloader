@@ -1,0 +1,10 @@
+# Keep text files normalized to LF in the repository. Windows checkouts get
+# CRLF only where a file type demands it, so diffs and CI stay consistent.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.zip binary
