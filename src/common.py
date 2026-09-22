@@ -48,6 +48,7 @@ def client(
     *,
     referer: str | None = None,
     accept: str | None = None,
+    extra_headers: dict[str, str] | None = None,
     **kwargs: Any,
 ) -> httpx.AsyncClient:
     """Create a shared AsyncClient with browser-like defaults."""
@@ -57,6 +58,8 @@ def client(
     if accept:
         headers["Accept"] = accept
     headers["Accept-Language"] = "en-US,en;q=0.9"
+    if extra_headers:
+        headers.update(extra_headers)
     merged: dict[str, Any] = {
         "headers": headers,
         "timeout": HTTP_TIMEOUT,
