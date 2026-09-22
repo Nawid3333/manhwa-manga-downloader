@@ -12,6 +12,7 @@ run.
 | `mgread`   | mgread.io                  | paginated series listing, reader scraping      |
 | `nelomanga`| nelomanga.net (MangaNelo)  | JSON chapter API + CDN URL pattern             |
 | `wfwf504`  | wfwf504.com (늑대닷컴)      | list pages, pagination, per-chapter folders    |
+| `mangago`  | mangago.me                 | needs a logged-in session, see below           |
 
 Drivers self-register: dropping a module into `src/sites/` that exports a
 `driver` is enough to add a site. See `AGENTS.md`.
@@ -23,6 +24,52 @@ py -3.11 -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
+
+## Why mangago needs an account
+
+mangago.me only shows a chapter's full page list in one request to a
+logged-in session. Anonymous readers get one HTTP request per
+panel instead of one per chapter — for a 50-page chapter that's ~50x more
+requests just to enumerate the images, before any are even downloaded — and
+anonymous traffic is more likely to hit mangago's Cloudflare bot challenge.
+
+mangago's login form also sits behind an image captcha plus bot-management
+that no plain HTTP client could satisfy, even with fully correct
+credentials and a browser-matching request (verified the hard way) — so
+logging in needs a real browser, not a request built by hand. Copy
+`.env.example` to `.env`, fill in `MANGAGO_EMAIL` / `MANGAGO_PASSWORD`,
+install the extra this needs once (`pip install -e ".[mangago]"` then
+`playwright install firefox`), and run:
+
+```pwsh
+python -m tests.mangago_login
+```
+
+It runs a real headless Firefox instance, then prints a message and waits
+once it's saved the captcha image to `data/mangago_captcha.png`. Open that
+image, read the 5 characters, and write them to
+`data/.mangago_captcha_answer.txt` (plain text, nothing else). The waiting
+script picks that up, fills the field, submits, confirms the login, and
+saves the session to `MANGAGO_COOKIE` in `.env` — that's what the driver
+actually sends on every request afterward. Re-running the script first
+checks whether that saved session is still valid and does nothing if so,
+so this is only needed again once it actually expires.
+
+The driver itself splits the work by what actually needs a browser and what
+doesn't: the chapter list is plain HTML (ordinary httpx + lxml, same as the
+other drivers), and the per-image CDN URLs turn out to be unsigned and
+unauthenticated once known, so the actual downloads stay on the fast
+httpx-based engine too. Only *finding* a chapter's image URLs needs a
+browser — mangago encrypts them client-side (`var imgsrcs = '...'`, AES,
+decrypted by an obfuscated bundled CryptoJS) and only exposes real `<img
+src>` values once that JS actually runs, so the driver points a headless
+Playwright page at the chapter and reads the DOM after decryption, rather
+than reverse-engineering a cipher that could change at any time. Listing
+pages have one more wrinkle: httpx's HTTP/2 stack gets a flat 403 from
+mangago's Cloudflare bot management regardless of headers or cookie —
+isolated by testing the identical request over HTTP/1.1, which works fine —
+so the driver's client forces HTTP/1.1 rather than needing a browser there
+too.
 
 ## Usage
 

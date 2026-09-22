@@ -12,11 +12,18 @@ import pkgutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from src.base import SiteDriver
 
 ROOT_DIR = Path(__file__).resolve().parent
 DOWNLOADS_DIR = ROOT_DIR / "downloads"
 LOGS_DIR = ROOT_DIR / "logs"
+
+# Must run before driver discovery below: some drivers (e.g. mangago, which
+# needs a logged-in session cookie) read their own env vars whenever a
+# request is made, so those vars have to already be in os.environ by then.
+load_dotenv(ROOT_DIR / ".env")
 
 # ---- conversion settings ---------------------------------------------------
 # Target format is always JPEG; non-JPEG downloads are converted after a run

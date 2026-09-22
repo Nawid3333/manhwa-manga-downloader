@@ -2,3 +2,4 @@ httpx[http2]
 lxml
 rich
 pillow
+python-dotenv

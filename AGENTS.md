@@ -31,6 +31,12 @@ non-JPEG image to JPEG after each run.
 - `src/sites/mgread.py` — mgread.io driver (page-scraped listing, pagination).
 - `src/sites/nelomanga.py` — nelomanga.net driver (JSON API + CDN URL pattern).
 - `src/sites/wfwf.py` — wfwf504.com driver (list pages, pagination).
+- `src/sites/mangago.py` — mangago.me driver (logged-in session required;
+  headless Playwright reads chapter image URLs the site encrypts
+  client-side, see README.md "Why mangago needs an account").
+- `tests/mangago_login.py` — standalone (non-pytest) login helper for the
+  mangago driver: drives a real headless Firefox through mangago's
+  captcha-gated login and saves the resulting session to `.env`.
 
 ## Non-negotiables
 
