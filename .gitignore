@@ -41,6 +41,5 @@ logs/
 logs/
 series_*/
 
-# One-off probes and scratch scripts
-_probe*.py
-_probe*.mjs
+# One-off probes and scratch scripts (underscore prefix = not part of the app)
+_*.py
