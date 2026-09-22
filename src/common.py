@@ -81,20 +81,29 @@ def make_downloader(
     """
 
     async def download_image(client: httpx.AsyncClient, url: str, dest: Path, image_sem: asyncio.Semaphore) -> bool:
-        try:
-            async with image_sem:
-                if dest.exists():
-                    return True
-                async with client.stream("GET", url, timeout=120) as resp:
-                    resp.raise_for_status()
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    with dest.open("wb") as out:
-                        async for chunk in resp.aiter_bytes(64 * 1024):
-                            out.write(chunk)
-            return True
-        except (httpx.HTTPError, OSError) as exc:
-            cwarning(f"      image failed {url}: {exc}")
-            return False
+        # CDNs occasionally drop HTTP/2 streams under load; retry transport
+        # failures a few times and write via a .part file so partial downloads
+        # are never mistaken for complete ones.
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                async with image_sem:
+                    if dest.exists():
+                        return True
+                    async with client.stream("GET", url, timeout=120) as resp:
+                        resp.raise_for_status()
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        tmp = dest.with_suffix(dest.suffix + ".part")
+                        with tmp.open("wb") as out:
+                            async for chunk in resp.aiter_bytes(64 * 1024):
+                                out.write(chunk)
+                        tmp.replace(dest)
+                return True
+            except (httpx.HTTPError, OSError) as exc:
+                last_exc = exc
+                await asyncio.sleep(0.5 * (attempt + 1))
+        cwarning(f"      image failed {url}: {last_exc}")
+        return False
 
     async def download_chapter(
         client: httpx.AsyncClient,

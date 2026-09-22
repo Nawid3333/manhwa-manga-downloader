@@ -124,7 +124,7 @@ def parse_manga_id(html: str) -> str | None:
     return str(val).strip() if val else None
 
 
-async def fetch_all_chapter_urls(client: httpx.AsyncClient, list_url: str) -> list[tuple[str, float]]:
+async def fetch_all_chapter_links(client: httpx.AsyncClient, list_url: str) -> list[tuple[str, float]]:
     """Return [(chapter_url, num), ...] sorted oldest -> newest."""
     slug = series_slug(list_url)
     first_html = await _page_html(client, list_url)
@@ -193,7 +193,7 @@ async def download_series_url(
         async with client() as c:
             return await download_series(c, [url], out_dir, dry_run=dry_run)
     async with _client(BASE, referer=BASE + "/") as c:
-        links = await fetch_all_chapter_urls(c, url)
+        links = await fetch_all_chapter_links(c, url)
         if not links:
             raise RuntimeError("No chapters found on the series page.")
         cinfo(f"Found {len(links)} chapter(s)")
