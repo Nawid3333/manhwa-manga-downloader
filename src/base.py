@@ -20,6 +20,7 @@ facade consumed by main.py are inherited — no plumbing needed.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -64,9 +65,17 @@ class SiteDriver:
         raise NotImplementedError
 
     def series_folder(self, url: str) -> str:
-        """Folder name for a series under downloads/<key>/."""
+        """Folder name for a series under downloads/<key>/.
+
+        Routed through `safe()` (clean_name) unconditionally: series_slug()
+        is driver-supplied and, for some drivers, built straight from a URL
+        query parameter that gets percent-decoded before it ever reaches
+        here. Without this, a crafted link could embed a `../` sequence and
+        write chapter files outside the downloads tree. This is the single
+        chokepoint for every driver, present and future.
+        """
         try:
-            return self.series_slug(url)
+            return self.safe(self.series_slug(url))
         except NotImplementedError:
             return "series"
 
@@ -107,7 +116,7 @@ class SiteDriver:
     # -----------------------------------------------------------------------
 
     @property
-    def _download_engine(self) -> Callable[..., Awaitable[dict[str, int]]]:
+    def _download_engine(self) -> Callable[..., Awaitable[dict[str, Any]]]:
         return make_downloader(
             site_label=self.key,
             fetch_image_urls=self.image_urls,
@@ -127,7 +136,7 @@ class SiteDriver:
         out_dir,
         chapters: list[int] | None = None,
         dry_run: bool = False,
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         """Facade used by main.py: fetch chapters, filter, download."""
         engine = self._download_engine
         if self.classify(url) == "chapter":

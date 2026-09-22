@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import httpx
 
 from src.base import SiteDriver
+from src.common import CHAPTER_PAGE_CONCURRENCY
 from src.htmlutil import all_of, attr, parse_html
 from term import cwarning
 
@@ -86,7 +87,7 @@ class MgreadDriver(SiteDriver):
         first_html = await self._page_html(client, list_url)
 
         pages = self.parse_pagination_pages(first_html)
-        semaphore = asyncio.Semaphore(4)
+        semaphore = asyncio.Semaphore(CHAPTER_PAGE_CONCURRENCY)
 
         async def _fetch_page(p: int) -> list[tuple[str, float]]:
             async with semaphore:

@@ -13,20 +13,11 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 
 from src.base import SiteDriver
+from src.common import CHAPTER_PAGE_CONCURRENCY
 from src.htmlutil import all_of, attr, first, parse_html, spaced_text
 from term import cerror
 
 BASE = "https://wfwf504.com"
-
-ILLEGAL_NAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-
-
-def _clean(text: str | None) -> str:
-    if not text:
-        return "untitled"
-    cleaned = ILLEGAL_NAME_RE.sub("", str(text)).strip()
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(". ")
-    return cleaned[:180] or "untitled"
 
 
 class WfwfDriver(SiteDriver):
@@ -76,7 +67,7 @@ class WfwfDriver(SiteDriver):
         first_html = await self._fetch_text(client, self._list_url(slug, sort, 1))
         pages = self._parse_pagination_pages(first_html)
 
-        semaphore = asyncio.Semaphore(6)
+        semaphore = asyncio.Semaphore(CHAPTER_PAGE_CONCURRENCY)
 
         async def _page(p: int) -> list[tuple[str, str]]:
             async with semaphore:
