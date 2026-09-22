@@ -15,12 +15,14 @@ and the image CDN are not. So this driver:
 
 from __future__ import annotations
 
+import asyncio
 import re
 from urllib.parse import urlparse
 
 import httpx
 
 from src.base import SiteDriver
+from src.common import retry_delay
 from term import cwarning
 
 BASE = "https://www.nelomanga.net"
@@ -146,11 +148,21 @@ class NelomangaDriver(SiteDriver):
 
     @staticmethod
     async def _head_ok(client: httpx.AsyncClient, url: str) -> bool:
-        try:
-            resp = await client.head(url)
-            return resp.status_code == 200
-        except httpx.HTTPError:
+        # A 429/503 means "the CDN is throttling us", not "this page doesn't
+        # exist" — treating it as the latter corrupts the binary-search page
+        # count and can make an entire chapter look CDN-unreachable under load.
+        for attempt in range(6):
+            try:
+                resp = await client.head(url)
+            except httpx.HTTPError:
+                return False
+            if resp.status_code == 200:
+                return True
+            if resp.status_code in (429, 503):
+                await asyncio.sleep(retry_delay(resp, attempt))
+                continue
             return False
+        return False
 
     async def image_urls(self, client: httpx.AsyncClient, chapter_url: str) -> list[str]:
         """Probe the CDN pattern for one chapter and return existing image urls."""

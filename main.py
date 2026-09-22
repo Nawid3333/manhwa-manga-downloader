@@ -7,6 +7,7 @@ completely site-agnostic: it asks for a URL, finds the driver, and delegates.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -56,6 +57,27 @@ def resolve_input(raw: str) -> tuple[str, str | None]:
 def choose_output_dir(url: str, driver) -> Path:
     """Default output directory: downloads/<site>/<series-slug>."""
     return DOWNLOADS_DIR / driver.key / driver.series_folder(url)
+
+
+def note_previous_incomplete(out_dir: Path) -> None:
+    """Heads-up if a prior run left chapters incomplete in this folder.
+
+    download_series_url() retries these automatically just by being pointed
+    at the same output directory again -- this just makes that visible
+    instead of relying on the user remembering scrollback from days ago.
+    """
+    report = out_dir / "incomplete_chapters.json"
+    if not report.exists():
+        return
+    try:
+        data = json.loads(report.read_text(encoding="utf-8"))
+        chapters = data.get("chapters", [])
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return
+    if chapters:
+        names = ", ".join(c.get("folder", "?") for c in chapters)
+        cwarning(f"{len(chapters)} chapter(s) from a previous run are still incomplete: {names}")
+        cinfo("This run will retry them automatically.")
 
 
 async def _count_chapters(driver, url: str):
@@ -114,6 +136,7 @@ def main() -> None:
         sys.exit(1)
 
     cinfo(f"Output directory: {out_dir}")
+    note_previous_incomplete(out_dir)
     if not cconfirm("Start download?", default=True):
         cinfo("Aborted.")
         pause()
@@ -122,6 +145,13 @@ def main() -> None:
     try:
         stats = asyncio.run(driver.download_series_url(url, out_dir, chapters=chapters))
         csuccess(f"Done! {stats.get('chapters', 0)} chapter(s), {stats.get('images', 0)} image(s) downloaded.")
+        incomplete = stats.get("incomplete_chapters") or []
+        if incomplete:
+            cerror(f"{len(incomplete)} chapter(s) still incomplete after retries: {', '.join(incomplete)}")
+            cwarning(
+                "Recorded in incomplete_chapters.json under the output directory — "
+                "re-running this same download will retry only what's missing."
+            )
         if CONVERT_TO_JPEG:
             from config import JPEG_QUALITY
 
