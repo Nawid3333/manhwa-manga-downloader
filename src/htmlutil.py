@@ -52,6 +52,17 @@ def all_of(doc, xpath: str) -> list:
     return doc.xpath(xpath)
 
 
+def attr(el, name: str) -> str | None:
+    """Element attribute as str, or None when absent (lxml returns lists for
+    namespaced attrs; plain attributes come back as str already)."""
+    if el is None:
+        return None
+    val = el.get(name)
+    if val is None:
+        return None
+    return str(val)
+
+
 def stripped_text(el) -> str:
     """lxml equivalent of BeautifulSoup's get_text(strip=True)."""
     return "".join(el.itertext()).strip()

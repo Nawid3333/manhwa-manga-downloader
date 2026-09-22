@@ -1,86 +1,89 @@
-"""Site registry and shared configuration."""
+"""Site registry and shared configuration.
+
+Drivers self-register: any module in src/sites/ that exports a `driver`
+(a SiteDriver instance) is discovered automatically — dropping a new file
+into src/sites/ is enough to add a site.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import importlib
+import pkgutil
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from src.base import SiteDriver
 
 ROOT_DIR = Path(__file__).resolve().parent
 DOWNLOADS_DIR = ROOT_DIR / "downloads"
 LOGS_DIR = ROOT_DIR / "logs"
 
+# ---- conversion settings ---------------------------------------------------
+# Target format is always JPEG; non-JPEG downloads are converted after a run
+# on the CPU (all cores). GPU conversion was evaluated and rejected: the
+# workload is codec-bound (decode + libjpeg encode), no GPU JPEG encoder
+# exists in any available runtime, and measured CPU throughput (~300 img/s
+# on all cores) already outruns network download. See AGENTS.md.
+CONVERT_TO_JPEG = True  # master switch
+JPEG_QUALITY = 90
+
 
 @dataclass(frozen=True)
 class Site:
-    """A supported manga/manhwa site."""
+    """Metadata about a registered site (built from its driver)."""
 
     key: str
     name: str
     domains: tuple[str, ...]
-    list_path: str
-    chapter_path: str
-    module: str  # src.site.<module_name>
+    module: str
+    driver: SiteDriver = field(compare=False)
 
 
-SUPPORTED_SITES: dict[str, Site] = {
-    "wfwf504": Site(
-        key="wfwf504",
-        name="wfwf504.com (늑대닷컴)",
-        domains=("wfwf504.com",),
-        list_path="/list",
-        chapter_path="/view",
-        module="src.sites.wfwf",
-    ),
-    "nelomanga": Site(
-        key="nelomanga",
-        name="nelomanga.net (MangaNelo)",
-        domains=("nelomanga.net",),
-        list_path="/manga/",
-        chapter_path="/manga/",
-        module="src.sites.nelomanga",
-    ),
-    "mgread": Site(
-        key="mgread",
-        name="mgread.io",
-        domains=("mgread.io",),
-        list_path="/manga/",
-        chapter_path="/manga/",
-        module="src.sites.mgread",
-    ),
-}
+def _discover_drivers() -> dict[str, Site]:
+    """Import every src/sites/*.py module and collect exported `driver`s."""
+    import src.sites as sites_pkg
+
+    drivers: dict[str, Site] = {}
+    for info in pkgutil.iter_modules(sites_pkg.__path__):
+        if info.name.startswith("_"):
+            continue
+        module_name = f"{sites_pkg.__name__}.{info.name}"
+        try:
+            mod = importlib.import_module(module_name)
+        except Exception as exc:  # a broken driver must not kill the app
+            print(f"[registry] failed to load site module {module_name}: {exc}")
+            continue
+        driver = getattr(mod, "driver", None)
+        if not isinstance(driver, SiteDriver) or not driver.key:
+            continue
+        if driver.key in drivers:
+            print(f"[registry] duplicate site key {driver.key!r} in {module_name}")
+            continue
+        drivers[driver.key] = Site(
+            key=driver.key,
+            name=driver.name or driver.key,
+            domains=tuple(driver.domains),
+            module=module_name,
+            driver=driver,
+        )
+    return drivers
+
+
+SUPPORTED_SITES: dict[str, Site] = _discover_drivers()
+
+
+def all_drivers() -> list[SiteDriver]:
+    return [site.driver for site in SUPPORTED_SITES.values()]
 
 
 def site_for_url(url: str) -> Site | None:
     """Return the registered site for a URL, or None."""
-    lowered = url.lower()
     for site in SUPPORTED_SITES.values():
-        if any(domain in lowered for domain in site.domains):
+        if site.driver.matches(url):
             return site
     return None
 
 
 def classify_url(url: str, site: Site) -> str:
-    """Return 'list', 'chapter', or 'unknown' for a URL under a known site."""
-    from urllib.parse import urlparse
-
-    # Site modules with path-based classification expose is_list_url/
-    # is_chapter_url; wfwf504 keeps its prefix-based scheme.
-    try:
-        import importlib
-
-        mod = importlib.import_module(site.module)
-    except Exception:
-        mod = None
-    if mod is not None and hasattr(mod, "is_list_url") and hasattr(mod, "is_chapter_url"):
-        if mod.is_chapter_url(url):
-            return "chapter"
-        if mod.is_list_url(url):
-            return "list"
-        return "unknown"
-
-    path = urlparse(url).path
-    if path.startswith(site.list_path):
-        return "list"
-    if path.startswith(site.chapter_path):
-        return "chapter"
-    return "unknown"
+    """Return 'list', 'chapter', or 'unknown' via the site's driver."""
+    return site.driver.classify(url)

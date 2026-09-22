@@ -1,20 +1,20 @@
 """Multi-site manhwa/manga downloader entry point.
 
-Structure follows the sibling scraper projects: config, term colors, site
-modules under src/sites/, and a main() that asks for a URL and dispatches.
+Site drivers live in src/sites/ and self-register (see config.py). main.py is
+completely site-agnostic: it asks for a URL, finds the driver, and delegates.
 """
 
 from __future__ import annotations
 
+import asyncio
 import sys
-from collections.abc import Coroutine
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
-from config import ROOT_DIR, classify_url, site_for_url
+from config import CONVERT_TO_JPEG, DOWNLOADS_DIR, classify_url, site_for_url
+from src.convert import convert_tree
 from term import (
     cconfirm,
     cerror,
@@ -53,40 +53,16 @@ def resolve_input(raw: str) -> tuple[str, str | None]:
     return url, None
 
 
-def choose_output_dir(url: str, site) -> Path:
-    """Create a default output directory based on the URL slug."""
-    from urllib.parse import parse_qs
-
-    parsed = urlparse(url)
-    slug = ""
-    qs = parse_qs(parsed.query)
-    slug = qs.get("toon", [""])[0]
-    if not slug:
-        # Path-based sites: /manga/<slug> or /manga/<slug>/chapter-1
-        parts = [p for p in parsed.path.split("/") if p]
-        if len(parts) >= 2 and parts[0] == "manga":
-            slug = parts[1]
-    if not slug:
-        slug = "unknown"
-    safe_slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in slug)
-    return ROOT_DIR / "downloads" / site.key / safe_slug
+def choose_output_dir(url: str, driver) -> Path:
+    """Default output directory: downloads/<site>/<series-slug>."""
+    return DOWNLOADS_DIR / driver.key / driver.series_folder(url)
 
 
-def dispatch_download(
-    url: str, site, out_dir: Path, chapters: list[int] | None = None
-) -> Coroutine[Any, Any, dict[str, int]]:
-    """Import the site module and return its (awaitable) download coroutine."""
-    import importlib
-
-    mod = importlib.import_module(site.module)
-    if hasattr(mod, "download_series_url"):
-        # New-style drivers take the raw URL and handle chapter selection.
-        return mod.download_series_url(url, out_dir, chapters=chapters)
-    return mod.download_series(url, out_dir, chapters=chapters)
+async def _count_chapters(driver, url: str):
+    return await driver.count_chapters(url)
 
 
 def main() -> None:
-
     cprint(banner(), color="cyan", panel=True)
     supported_sites()
 
@@ -102,26 +78,19 @@ def main() -> None:
         cerror("Unsupported site. Supported domains are listed above.")
         pause()
         sys.exit(1)
+    driver = site.driver
 
     kind = classify_url(url, site)
     if kind == "chapter":
         cinfo("Chapter URL detected — only this chapter will be downloaded.")
         chapters = None
-        out_dir = ROOT_DIR / "downloads" / site.key / "single_chapters"
+        out_dir = DOWNLOADS_DIR / driver.key / driver.single_chapter_folder()
     elif kind == "list":
-        out_dir = choose_output_dir(url, site)
+        out_dir = choose_output_dir(url, driver)
         cinfo(f"Series folder: {out_dir}")
 
         try:
-            import asyncio
-            import importlib
-
-            async def _count_chapters():
-                mod = importlib.import_module(site.module)
-                async with mod.client() as c:
-                    return await mod.fetch_all_chapter_links(c, url)
-
-            links = asyncio.run(_count_chapters())
+            links = asyncio.run(_count_chapters(driver, url))
         except Exception as exc:
             cerror(f"Could not read chapter list: {exc}")
             pause()
@@ -151,10 +120,12 @@ def main() -> None:
         sys.exit(0)
 
     try:
-        import asyncio
-
-        stats = asyncio.run(dispatch_download(url, site, out_dir, chapters=chapters))
+        stats = asyncio.run(driver.download_series_url(url, out_dir, chapters=chapters))
         csuccess(f"Done! {stats.get('chapters', 0)} chapter(s), {stats.get('images', 0)} image(s) downloaded.")
+        if CONVERT_TO_JPEG:
+            from config import JPEG_QUALITY
+
+            convert_tree(out_dir, quality=JPEG_QUALITY)
     except httpx.HTTPStatusError as exc:
         cerror(f"HTTP error {exc.response.status_code}: {exc.request.url}")
     except httpx.HTTPError as exc:
