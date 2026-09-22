@@ -39,6 +39,12 @@ output tree are converted to JPEG (quality 90) on all CPU cores.
 
 Output lands in `downloads/<site-key>/<series-slug>/<chapter-folder>/`.
 
+Every run also writes a timestamped log file to `logs/` (e.g.
+`logs/run_20260922_153000.log`) — the same messages shown on screen, plus
+per-image request timing and the live adaptive concurrency limit (see
+Reliability below) that aren't printed to the console. The path is printed
+at startup.
+
 ## Reliability
 
 A chapter is never reported as downloaded unless every one of its images is
@@ -50,12 +56,30 @@ check:
   HTTP/2 stream or an overloaded CDN serving a truncated "200 OK" is caught
   and retried instead of being silently kept as a corrupt page. The same
   check gates resume: an existing file from a previous run is only trusted
-  if it still decodes cleanly.
-- Each image gets its own retry budget (with backoff; 429/503 responses
-  honor `Retry-After`), and on top of that, a chapter that still has
-  missing or corrupt images after all of its images have had their
+  if it still decodes cleanly. Resume also recognizes a file that was
+  already converted to `.jpg` by a previous run's conversion pass, even
+  though the site's listing still points at the original (e.g. `.webp`)
+  URL — otherwise every re-run of an already-converted series would
+  silently redownload everything.
+- A completed chapter's image count is recorded in
+  `chapter_manifest.json` inside the output directory. On a later run, if a
+  chapter's folder on disk still matches that count (verified with the same
+  real decode check, not just a file count), its listing-page fetch is
+  skipped entirely — a rerun over hundreds of already-downloaded chapters
+  doesn't have to re-fetch each one's page just to confirm it has nothing
+  to do.
+- Each image gets its own retry budget (with jittered backoff; 429/503
+  responses honor `Retry-After`), and on top of that, a chapter that still
+  has missing or corrupt images after all of its images have had their
   individual attempts gets several more chapter-level retry rounds before
   it's given up on.
+- Image concurrency is adaptive, not fixed: every failed attempt shrinks the
+  allowed concurrency for the rest of the run (down to a floor), every
+  success nudges it back up — the same idea as TCP's AIMD congestion
+  control. A CDN that starts dropping streams or truncating responses under
+  load gets backed off automatically instead of being hammered at a
+  constant rate; `tests/benchmark_server.py` can be used to measure a given
+  site's actual safe concurrency ahead of time.
 - A chapter that's still incomplete after all of that is never silently
   accepted — it's reported by name at the end of the run and recorded in
   `incomplete_chapters.json` inside the output directory (merged across
@@ -111,9 +135,12 @@ again before an automated release is allowed to publish (see
 `.github/workflows/auto-release.yml`). The test suite is fully hermetic —
 every driver's HTTP calls go through `httpx.MockTransport`, never a live
 site (see `tests/conftest.py`) — so it runs the same on a laptop or a CI
-runner. `tests/benchmark_convert.py` is a separate, standalone script that
-benchmarks the conversion pipeline on synthetic images; it isn't part of
-the `pytest` run.
+runner. `tests/benchmark_convert.py` and `tests/benchmark_server.py` are
+separate, standalone scripts — the first benchmarks the conversion pipeline
+on synthetic images, the second measures a real site's safe concurrency by
+ramping request load against a real chapter's images
+(`python -m tests.benchmark_server <chapter-or-series-url>`); neither is
+part of the `pytest` run.
 
 ## License
 

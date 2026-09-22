@@ -15,13 +15,27 @@ never silently accepted: it's reported by name in the returned stats and
 recorded in `incomplete_chapters.json` under the output directory, so a
 later re-run (or a human) can find and finish it -- the file is merged, not
 overwritten, so it stays accurate across multiple runs of the same series.
+
+Resume is two-layered. Per-image, `download_image` treats a file as already
+done not just at its source-URL extension but also at its `.jpg` sibling --
+the post-run conversion pass (src/convert.py) renames every non-JPEG image
+to `.jpg` and deletes the source, so a re-run's freshly-fetched listing
+still points at e.g. `.webp` even though the file that's actually on disk
+is `.jpg`; without this, every re-run of an already-converted series would
+silently redownload everything. Per-chapter, `chapter_manifest.json` records
+each chapter's image count once it completes, so a later run can confirm a
+chapter's folder still matches on disk (same real decode check as any other
+resume) and skip that chapter's listing-page fetch entirely instead of
+hitting the network just to relearn a count it already knows.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -32,7 +46,7 @@ from urllib.parse import urlparse
 import httpx
 from PIL import Image, UnidentifiedImageError
 
-from term import cerror, cinfo, cwarning
+from term import cerror, cinfo, cwarning, log_debug
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -40,6 +54,7 @@ USER_AGENT = (
 
 HTTP_TIMEOUT = 60.0
 IMAGE_CONCURRENCY = 24
+IMAGE_CONCURRENCY_MIN = 4
 CHAPTER_PAGE_CONCURRENCY = 6
 CHAPTER_DOWNLOAD_CONCURRENCY = 5
 
@@ -92,6 +107,66 @@ def retry_delay(response: httpx.Response, attempt: int) -> float:
         except ValueError:
             pass
     return min(2.0 * (attempt + 1), 15.0)
+
+
+def _jittered_delay(attempt: int, *, base: float = 0.5, cap: float = 5.0) -> float:
+    """Backoff for a transient/integrity-check failure, with jitter.
+
+    A fixed `base * (attempt + 1)` delay is fine for one image, but with
+    IMAGE_CONCURRENCY images retrying in parallel, every one of them that
+    failed on the same round sleeps for the same duration and then retries
+    in the same instant -- a self-inflicted thundering herd against a CDN
+    that may already be struggling. The random component spreads retries
+    out instead of re-synchronizing them.
+    """
+    raw = min(base * (attempt + 1), cap)
+    return raw + random.uniform(0, raw * 0.5)
+
+
+class AdaptiveLimiter:
+    """Concurrency limiter that backs off on failure and recovers on success.
+
+    A plain semaphore holds concurrency at a fixed number picked in advance;
+    that either leaves headroom unused on a fast CDN or keeps hammering a
+    struggling one at the exact rate that's causing its drops/truncated
+    responses in the first place ("downloaded file failed its integrity
+    check"). This applies the same idea as TCP's AIMD congestion control:
+    every failed attempt multiplicatively shrinks the allowed concurrency
+    (down to `minimum`), every successful one nudges it back up by a small
+    fixed step (up to `maximum`) -- so a run settles near whatever the
+    remote server actually sustains instead of a hand-picked constant.
+    """
+
+    _DECREASE_FACTOR = 0.75
+    _INCREASE_STEP = 0.5
+
+    def __init__(self, initial: int, minimum: int, maximum: int) -> None:
+        self._limit = float(initial)
+        self._minimum = minimum
+        self._maximum = maximum
+        self._in_flight = 0
+        self._condition = asyncio.Condition()
+
+    @property
+    def current_limit(self) -> int:
+        return round(self._limit)
+
+    async def acquire(self) -> None:
+        async with self._condition:
+            await self._condition.wait_for(lambda: self._in_flight < self._limit)
+            self._in_flight += 1
+
+    async def release(self, *, success: bool) -> None:
+        async with self._condition:
+            self._in_flight -= 1
+            before = round(self._limit)
+            if success:
+                self._limit = min(self._maximum, self._limit + self._INCREASE_STEP)
+            else:
+                self._limit = max(self._minimum, self._limit * self._DECREASE_FACTOR)
+            if round(self._limit) != before:
+                log_debug(f"adaptive concurrency limit {before} -> {round(self._limit)} (success={success})")
+            self._condition.notify_all()
 
 
 # Minimum plausible image: magic bytes present and not absurdly small.
@@ -219,6 +294,67 @@ def _write_incomplete_report(out_dir: Path, results: list[ChapterResult]) -> Non
         path.unlink()
 
 
+def _load_manifest(out_dir: Path) -> dict[str, int]:
+    """folder name -> image count, for chapters known complete as of the last run."""
+    path = out_dir / "chapter_manifest.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {str(folder): int(count) for folder, count in data.get("chapters", {}).items()}
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return {}
+
+
+def _write_manifest(out_dir: Path, results: list[ChapterResult]) -> None:
+    """Merge this run's outcome into out_dir/chapter_manifest.json.
+
+    Same merge-not-overwrite shape as _write_incomplete_report, for the same
+    reason: out_dir can carry results from many separate runs. A chapter
+    that went incomplete this run has its entry dropped rather than left
+    stale, so a later run can't mistake a half-finished chapter for one the
+    manifest fast path is allowed to trust.
+    """
+    path = out_dir / "chapter_manifest.json"
+    entries: dict[str, int] = {}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            entries = {str(k): int(v) for k, v in existing.get("chapters", {}).items()}
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            entries = {}
+
+    for r in results:
+        if r.complete and r.total > 0:
+            entries[r.folder] = r.total
+        else:
+            entries.pop(r.folder, None)
+
+    if entries:
+        path.write_text(json.dumps({"chapters": dict(sorted(entries.items()))}, indent=2), encoding="utf-8")
+    elif path.exists():
+        path.unlink()
+
+
+async def _verify_folder_matches_manifest(folder: Path, expected_count: int) -> bool:
+    """True when `folder` already holds exactly the manifest's image count.
+
+    Requires the exact sequential stems (0001..expected_count), not just a
+    matching file count, so e.g. a leftover duplicate alongside one missing
+    page doesn't accidentally pass. Every file still gets the same real
+    decode check as a fresh download (_plausible_download) -- this only
+    saves the listing-page network round trip, never the integrity check.
+    """
+    if not folder.is_dir():
+        return False
+    files = [p for p in folder.iterdir() if p.is_file() and p.stem.isdigit()]
+    expected_stems = {f"{i:04d}" for i in range(1, expected_count + 1)}
+    if len(files) != expected_count or {p.stem for p in files} != expected_stems:
+        return False
+    checks = await asyncio.gather(*(_plausible_download(p) for p in files))
+    return all(checks)
+
+
 def make_downloader(
     *,
     site_label: str,
@@ -231,7 +367,7 @@ def make_downloader(
     chapter_folder_name(chapter_url) -> folder name for that chapter
     """
 
-    async def download_image(client: httpx.AsyncClient, url: str, dest: Path, image_sem: asyncio.Semaphore) -> bool:
+    async def download_image(client: httpx.AsyncClient, url: str, dest: Path, image_sem: AdaptiveLimiter) -> bool:
         # CDNs occasionally drop HTTP/2 streams under load, or answer a "200"
         # with a truncated/garbage body -- both look identical to a caller
         # that only checks the status code. Every attempt writes to a `.part`
@@ -241,12 +377,31 @@ def make_downloader(
         # failure instead of being silently accepted. 429/503 get their own,
         # longer backoff (honoring Retry-After) since those mean "back off",
         # not "broken".
+        #
+        # The concurrency slot is held only for the request itself, not for
+        # the backoff sleep afterwards -- holding it through the sleep (the
+        # previous behavior) ties up one of a handful of global slots doing
+        # nothing while other images that could make progress wait behind
+        # it. `image_sem` also gets told whether this attempt succeeded so
+        # it can shrink/grow the allowed concurrency (see AdaptiveLimiter).
+        #
+        # jpg_sibling: the target format is always JPEG (see src/convert.py),
+        # and that conversion deletes the original -- so on a re-run, a file
+        # already converted from a previous run only exists at the `.jpg`
+        # path, not at whatever extension this chapter's (freshly refetched)
+        # source URL still has. Checking both is what makes resume actually
+        # skip already-converted images instead of redownloading them.
+        jpg_sibling = dest if dest.suffix.lower() == ".jpg" else dest.with_suffix(".jpg")
         last_exc: Exception | None = None
         for attempt in range(MAX_IMAGE_ATTEMPTS):
+            await image_sem.acquire()
+            ok = False
+            delay = 0.0
+            started = time.perf_counter()
             try:
-                async with image_sem:
-                    if await _plausible_download(dest):
-                        return True
+                if await _plausible_download(dest) or (jpg_sibling != dest and await _plausible_download(jpg_sibling)):
+                    ok = True
+                else:
                     async with client.stream("GET", url, timeout=120) as resp:
                         resp.raise_for_status()
                         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -254,21 +409,31 @@ def make_downloader(
                         with tmp.open("wb") as out:
                             async for chunk in resp.aiter_bytes(64 * 1024):
                                 out.write(chunk)
-                    if not await _plausible_download(tmp):
+                    if await _plausible_download(tmp):
+                        tmp.replace(dest)
+                        ok = True
+                    else:
                         tmp.unlink(missing_ok=True)
                         last_exc = ValueError("downloaded file failed its integrity check")
-                        await asyncio.sleep(0.5 * (attempt + 1))
-                        continue
-                    tmp.replace(dest)
-                    return True
+                        delay = _jittered_delay(attempt)
             except httpx.HTTPStatusError as exc:
                 last_exc = exc
                 status = exc.response.status_code
-                delay = retry_delay(exc.response, attempt) if status in (429, 503) else 0.5 * (attempt + 1)
-                await asyncio.sleep(delay)
+                delay = retry_delay(exc.response, attempt) if status in (429, 503) else _jittered_delay(attempt)
             except (httpx.HTTPError, OSError) as exc:
                 last_exc = exc
-                await asyncio.sleep(0.5 * (attempt + 1))
+                delay = _jittered_delay(attempt)
+            finally:
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                log_debug(
+                    f"{url} attempt={attempt + 1}/{MAX_IMAGE_ATTEMPTS} ok={ok} "
+                    f"elapsed_ms={elapsed_ms:.0f} concurrency_limit={image_sem.current_limit}"
+                )
+                await image_sem.release(success=ok)
+            if ok:
+                return True
+            if delay:
+                await asyncio.sleep(delay)
         cwarning(f"      image failed {url}: {last_exc}")
         return False
 
@@ -277,11 +442,21 @@ def make_downloader(
         chapter_url: str,
         out_dir: Path,
         chapter_sem: asyncio.Semaphore,
-        image_sem: asyncio.Semaphore,
+        image_sem: AdaptiveLimiter,
+        manifest: dict[str, int],
         dry_run: bool = False,
     ) -> ChapterResult:
         async with chapter_sem:
             folder_name = clean_name(chapter_folder_name(chapter_url))
+
+            expected = manifest.get(folder_name)
+            if (
+                expected is not None
+                and not dry_run
+                and await _verify_folder_matches_manifest(out_dir / folder_name, expected)
+            ):
+                log_debug(f"{folder_name}: {expected} image(s) verified on disk, skipped listing fetch")
+                return ChapterResult(folder_name, chapter_url, ok=expected, total=expected, complete=True)
 
             image_urls: list[str] = []
             last_exc: Exception | None = None
@@ -326,7 +501,7 @@ def make_downloader(
                         f"    retrying {len(pending)} image(s) in {folder_name} "
                         f"(attempt {round_num + 1}/{CHAPTER_RETRY_ROUNDS})"
                     )
-                    await asyncio.sleep(CHAPTER_RETRY_PAUSE)
+                    await asyncio.sleep(CHAPTER_RETRY_PAUSE + random.uniform(0, 2.0))
                 results = await asyncio.gather(*(attempt_one(i) for i in pending), return_exceptions=True)
                 still_pending = [idx for idx, result in zip(pending, results, strict=True) if result is not True]
                 ok_count += len(pending) - len(still_pending)
@@ -349,12 +524,16 @@ def make_downloader(
         *,
         dry_run: bool = False,
     ) -> dict[str, Any]:
-        image_sem = asyncio.Semaphore(IMAGE_CONCURRENCY)
+        image_sem = AdaptiveLimiter(IMAGE_CONCURRENCY, IMAGE_CONCURRENCY_MIN, IMAGE_CONCURRENCY)
         chapter_sem = asyncio.Semaphore(CHAPTER_DOWNLOAD_CONCURRENCY)
         out_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {} if dry_run else _load_manifest(out_dir)
 
         gathered = await asyncio.gather(
-            *(download_chapter(client, url, out_dir, chapter_sem, image_sem, dry_run) for url in chapter_urls),
+            *(
+                download_chapter(client, url, out_dir, chapter_sem, image_sem, manifest, dry_run)
+                for url in chapter_urls
+            ),
             return_exceptions=True,
         )
         total_ok_images = 0
@@ -376,6 +555,7 @@ def make_downloader(
 
         if not dry_run:
             _write_incomplete_report(out_dir, results)
+            _write_manifest(out_dir, results)
 
         return {
             "chapters": complete_chapters,

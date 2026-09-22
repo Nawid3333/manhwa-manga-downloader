@@ -7,8 +7,20 @@ TTY. This mirrors the style used in the sibling scraper projects.
 from __future__ import annotations
 
 import contextlib
+import logging
 from collections.abc import Mapping
+from datetime import datetime
+from pathlib import Path
 from typing import Any
+
+# Mirrors every cinfo/cwarning/cerror/csuccess call into a per-run log file
+# (see init_file_logging, called once from main.py) so a run is
+# reconstructable after the terminal scrollback is gone. Silent (no handler,
+# no-op writes) until init_file_logging attaches a file handler -- tests and
+# library-style imports of term.py never touch disk.
+_file_logger = logging.getLogger("mangadl")
+_file_logger.setLevel(logging.DEBUG)
+_file_logger.propagate = False
 
 _rich_ok = False
 try:
@@ -74,20 +86,51 @@ def cconfirm(prompt: str, default: bool = True) -> bool:
     return answer in ("y", "yes")
 
 
+def init_file_logging(logs_dir: Path) -> Path:
+    """Attach a per-run log file under logs_dir.
+
+    Every cerror/cwarning/csuccess/cinfo call is mirrored there (at the
+    matching level), plus DEBUG-level request diagnostics (log_debug) that
+    would be too noisy for the console -- per-image attempt timing and the
+    adaptive concurrency limit, which is exactly what's needed to tell
+    "the network hiccuped once" apart from "this site throttles hard past
+    concurrency N" after the fact. Returns the log file path so the caller
+    can tell the user where it is. Safe to call more than once; each call
+    just adds another handler (harmless, but callers should normally call it
+    once at startup).
+    """
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_path = logs_dir / f"run_{datetime.now():%Y%m%d_%H%M%S}.log"
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(message)s", "%Y-%m-%d %H:%M:%S"))
+    _file_logger.addHandler(handler)
+    return log_path
+
+
+def log_debug(message: str) -> None:
+    """Diagnostic detail written only to the log file, never the console."""
+    _file_logger.debug(message)
+
+
 def cerror(message: str) -> None:
     cprint(message, color="red", panel=True, title="error")
+    _file_logger.error(message)
 
 
 def cwarning(message: str) -> None:
     cprint(message, color="yellow", panel=True, title="warning")
+    _file_logger.warning(message)
 
 
 def csuccess(message: str) -> None:
     cprint(message, color="green", panel=True, title="success")
+    _file_logger.info(message)
 
 
 def cinfo(message: str) -> None:
     cprint(message, color="cyan")
+    _file_logger.info(message)
 
 
 def pause(message: str = "Press Enter to exit...") -> None:

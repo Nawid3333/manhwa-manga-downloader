@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from config import CONVERT_TO_JPEG, DOWNLOADS_DIR, classify_url, site_for_url
+from config import CONVERT_TO_JPEG, DOWNLOADS_DIR, LOGS_DIR, classify_url, site_for_url
 from src.convert import convert_tree
 from term import (
     cconfirm,
@@ -24,6 +24,7 @@ from term import (
     cprint,
     csuccess,
     cwarning,
+    init_file_logging,
     list_sites_table,
     pause,
     prompt_range,
@@ -85,7 +86,9 @@ async def _count_chapters(driver, url: str):
 
 
 def main() -> None:
+    log_path = init_file_logging(LOGS_DIR)
     cprint(banner(), color="cyan", panel=True)
+    cinfo(f"Logging to {log_path}")
     supported_sites()
 
     raw = cinput("\nPaste a series list URL or chapter URL: ", color="green")

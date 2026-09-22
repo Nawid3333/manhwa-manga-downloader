@@ -19,9 +19,9 @@ import src.common as common
 FAKE_JPEG_BYTES = b"\xff\xd8" + b"0" * 600
 
 
-def _make_fetch(count: int):
+def _make_fetch(count: int, ext: str = ".jpg"):
     async def _fetch(_client: httpx.AsyncClient, chapter_url: str) -> list[str]:
-        return [f"{chapter_url}/{i}.jpg" for i in range(count)]
+        return [f"{chapter_url}/{i}{ext}" for i in range(count)]
 
     return _fetch
 
@@ -115,6 +115,38 @@ async def test_plausible_download_valid_jpeg(tmp_path: Path, jpeg_bytes: bytes):
     assert await common._plausible_download(path) is True
 
 
+# ---- AdaptiveLimiter: AIMD concurrency control ------------------------------
+
+
+async def test_adaptive_limiter_shrinks_on_failure_and_clamps_to_minimum():
+    limiter = common.AdaptiveLimiter(initial=10, minimum=2, maximum=10)
+    for _ in range(20):
+        await limiter.acquire()
+        await limiter.release(success=False)
+    assert limiter.current_limit == 2
+
+
+async def test_adaptive_limiter_grows_on_success_and_clamps_to_maximum():
+    limiter = common.AdaptiveLimiter(initial=2, minimum=2, maximum=10)
+    for _ in range(50):
+        await limiter.acquire()
+        await limiter.release(success=True)
+    assert limiter.current_limit == 10
+
+
+async def test_adaptive_limiter_recovers_after_a_failure_streak_ends():
+    limiter = common.AdaptiveLimiter(initial=10, minimum=2, maximum=10)
+    for _ in range(5):
+        await limiter.acquire()
+        await limiter.release(success=False)
+    shrunk = limiter.current_limit
+    assert shrunk < 10
+
+    await limiter.acquire()
+    await limiter.release(success=True)
+    assert limiter.current_limit > shrunk
+
+
 # ---- make_downloader / download_series: happy path --------------------------
 
 
@@ -157,6 +189,33 @@ async def test_download_series_skips_existing_plausible_file(tmp_path: Path, moc
     assert stats["images"] == 2
     # only the missing second image should have hit the network
     assert calls == ["https://fake.test/ch1/1.jpg"]
+
+
+async def test_download_series_resume_recognizes_an_already_converted_jpg(
+    tmp_path: Path, mock_client, jpeg_bytes: bytes
+):
+    """A previous run's post-download JPEG conversion (src/convert.py) deletes
+    the original and leaves only the `.jpg`. A re-run's freshly-fetched
+    listing still points at the original extension (e.g. `.webp`); resume
+    must still recognize the file as already done via its `.jpg` sibling
+    instead of redownloading it."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("should not hit the network for an already-converted image")
+
+    chapter_dir = tmp_path / "ch1"
+    chapter_dir.mkdir()
+    (chapter_dir / "0001.jpg").write_bytes(jpeg_bytes)
+
+    downloader = common.make_downloader(
+        site_label="fake",
+        fetch_image_urls=_make_fetch(1, ext=".webp"),
+        chapter_folder_name=lambda url: "ch1",
+    )
+    async with mock_client(handler) as client:
+        stats = await downloader(client, ["https://fake.test/ch1"], tmp_path)
+
+    assert stats == {"chapters": 1, "images": 1, "failed_chapters": 0, "incomplete_chapters": []}
 
 
 async def test_download_series_sanitizes_a_malicious_folder_name(tmp_path: Path, mock_client, jpeg_bytes: bytes):
@@ -453,3 +512,82 @@ async def test_dry_run_does_not_write_incomplete_report(tmp_path: Path, mock_cli
     assert stats["chapters"] == 1
     assert not (tmp_path / "incomplete_chapters.json").exists()
     assert not (tmp_path / "ch1").exists()
+
+
+# ---- chapter_manifest.json: skip the listing fetch for verified chapters ----
+
+
+async def test_rerun_skips_listing_fetch_for_a_manifest_verified_chapter(
+    tmp_path: Path, mock_client, jpeg_bytes: bytes
+):
+    calls = {"n": 0}
+
+    async def fetch(_client: httpx.AsyncClient, chapter_url: str) -> list[str]:
+        calls["n"] += 1
+        return [f"{chapter_url}/{i}.jpg" for i in range(2)]
+
+    downloader = common.make_downloader(
+        site_label="fake",
+        fetch_image_urls=fetch,
+        chapter_folder_name=lambda url: "ch1",
+    )
+    async with mock_client(lambda r: httpx.Response(200, content=jpeg_bytes)) as client:
+        stats1 = await downloader(client, ["https://fake.test/ch1"], tmp_path)
+
+    assert stats1 == {"chapters": 1, "images": 2, "failed_chapters": 0, "incomplete_chapters": []}
+    assert calls["n"] == 1
+    manifest_path = tmp_path / "chapter_manifest.json"
+    assert manifest_path.exists()
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == {"chapters": {"ch1": 2}}
+
+    async with mock_client(lambda r: httpx.Response(200, content=jpeg_bytes)) as client:
+        stats2 = await downloader(client, ["https://fake.test/ch1"], tmp_path)
+
+    assert stats2 == {"chapters": 1, "images": 2, "failed_chapters": 0, "incomplete_chapters": []}
+    assert calls["n"] == 1  # the listing page was not fetched a second time
+
+
+async def test_manifest_falls_back_to_a_real_check_if_a_file_goes_missing(
+    tmp_path: Path, mock_client, jpeg_bytes: bytes
+):
+    calls = {"n": 0}
+
+    async def fetch(_client: httpx.AsyncClient, chapter_url: str) -> list[str]:
+        calls["n"] += 1
+        return [f"{chapter_url}/{i}.jpg" for i in range(2)]
+
+    downloader = common.make_downloader(
+        site_label="fake",
+        fetch_image_urls=fetch,
+        chapter_folder_name=lambda url: "ch1",
+    )
+    async with mock_client(lambda r: httpx.Response(200, content=jpeg_bytes)) as client:
+        await downloader(client, ["https://fake.test/ch1"], tmp_path)
+    assert calls["n"] == 1
+
+    (tmp_path / "ch1" / "0002.jpg").unlink()
+
+    async with mock_client(lambda r: httpx.Response(200, content=jpeg_bytes)) as client:
+        stats = await downloader(client, ["https://fake.test/ch1"], tmp_path)
+
+    assert calls["n"] == 2  # manifest didn't match on disk, so it re-fetched the listing
+    assert stats == {"chapters": 1, "images": 2, "failed_chapters": 0, "incomplete_chapters": []}
+    assert (tmp_path / "ch1" / "0002.jpg").exists()
+
+
+async def test_manifest_entry_is_dropped_when_a_chapter_goes_incomplete(tmp_path: Path, mock_client, jpeg_bytes: bytes):
+    downloader = common.make_downloader(
+        site_label="fake",
+        fetch_image_urls=_make_fetch(2),
+        chapter_folder_name=lambda url: "ch1",
+    )
+    async with mock_client(lambda r: httpx.Response(200, content=jpeg_bytes)) as client:
+        await downloader(client, ["https://fake.test/ch1"], tmp_path)
+    manifest_path = tmp_path / "chapter_manifest.json"
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == {"chapters": {"ch1": 2}}
+
+    (tmp_path / "ch1" / "0002.jpg").unlink()
+    async with mock_client(lambda r: httpx.Response(500)) as client:
+        await downloader(client, ["https://fake.test/ch1"], tmp_path)
+
+    assert not manifest_path.exists()
