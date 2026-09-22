@@ -56,7 +56,9 @@ indent-width = 4
 quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false
-line-ending = "native"
+# The repo normalizes to LF via .gitattributes; "native" would demand CRLF on
+# Windows runners and fail format --check against the LF blobs.
+line-ending = "lf"
 
 [tool.ruff.lint]
 select = [
