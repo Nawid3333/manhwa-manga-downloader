@@ -1,6 +1,6 @@
-# Runs lint + type check on every push and pull request. There is no test
-# suite yet (the code talks to live sites, which CI cannot do reliably), so
-# this workflow is the whole gate for now; a pytest step slots in below.
+# Runs lint, type check, and the (fully hermetic) test suite on every push
+# and pull request. Drivers talk to live sites, which CI cannot do reliably,
+# so tests go through httpx.MockTransport instead -- see tests/conftest.py.
 name: CI
 
 on:
@@ -41,5 +41,5 @@ jobs:
       - name: Type check
         run: python -m pyright
 
-      # - name: Test
-      #   run: python -m pytest
+      - name: Test
+        run: python -m pytest

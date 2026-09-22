@@ -37,7 +37,7 @@ logs/
 
 # Project data (generated at runtime: downloads + logs, all locations)
 /data/
-/downloads/
+/downloads
 logs/
 series_*/
 

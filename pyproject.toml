@@ -18,7 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # numpy is only needed by tests/benchmark_convert.py's synthetic images.
-dev = ["pytest>=9.1.1", "ruff>=0.6.0", "pyright>=1.1.400", "numpy>=2.1.0"]
+dev = ["pytest>=9.1.1", "pytest-asyncio>=1.4.0", "ruff>=0.6.0", "pyright>=1.1.400", "numpy>=2.1.0"]
 
 [project.scripts]
 mangadl = "main:main"
@@ -29,6 +29,15 @@ py-modules = ["main", "config", "term"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
+
+# ==================== TESTING ====================
+# The test suite is fully hermetic -- driver network calls go through
+# httpx.MockTransport, never the live sites (see tests/conftest.py).
+# tests/benchmark_convert.py is a standalone script, not part of this run
+# (it doesn't match the test_*.py pattern).
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
 
 # ==================== RELEASE AUTOMATION ====================
 # Version is bumped automatically by python-semantic-release, driven by
