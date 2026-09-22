@@ -43,6 +43,27 @@ def limits() -> httpx.Limits:
     return httpx.Limits(max_keepalive_connections=20, max_connections=100)
 
 
+# Minimum plausible image: magic bytes present and not absurdly small.
+_MIN_IMAGE_BYTES = 512
+_IMAGE_MAGIC = (b"\xff\xd8", b"RIFF", b"\x89PNG", b"GIF8", b"II*\x00", b"MM\x00*", b"\x00\x00\x00 ftyp")
+
+
+def _plausible_download(path: Path) -> bool:
+    """True when an existing file looks like a complete image download.
+
+    Used by resume logic: a 0-byte file or one without a known image magic
+    (left over from a dropped stream before .part writes existed) must be
+    re-downloaded rather than trusted.
+    """
+    try:
+        if path.stat().st_size < _MIN_IMAGE_BYTES:
+            return False
+        with path.open("rb") as f:
+            return f.read(16).startswith(_IMAGE_MAGIC)
+    except OSError:
+        return False
+
+
 def client(
     base_site: str,
     *,
@@ -86,12 +107,14 @@ def make_downloader(
     async def download_image(client: httpx.AsyncClient, url: str, dest: Path, image_sem: asyncio.Semaphore) -> bool:
         # CDNs occasionally drop HTTP/2 streams under load; retry transport
         # failures a few times and write via a .part file so partial downloads
-        # are never mistaken for complete ones.
+        # are never mistaken for complete ones. Existing files are validated:
+        # a 0-byte or truncated leftovers from an old crash gets re-downloaded
+        # instead of being trusted by the resume logic.
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
                 async with image_sem:
-                    if dest.exists():
+                    if _plausible_download(dest):
                         return True
                     async with client.stream("GET", url, timeout=120) as resp:
                         resp.raise_for_status()
@@ -101,6 +124,10 @@ def make_downloader(
                             async for chunk in resp.aiter_bytes(64 * 1024):
                                 out.write(chunk)
                         tmp.replace(dest)
+                    if not _plausible_download(dest):
+                        # Server itself served junk; don't retry forever.
+                        cwarning(f"      server returned implausible data: {url}")
+                        return True
                 return True
             except (httpx.HTTPError, OSError) as exc:
                 last_exc = exc
