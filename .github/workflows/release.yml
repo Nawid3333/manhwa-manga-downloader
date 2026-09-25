@@ -6,9 +6,15 @@ name: Release
 on:
   release:
     types: [published]
-  # Also runnable by hand from the Actions tab, to check the build without
-  # cutting a release.
+  # Also runnable by hand from the Actions tab: with no tag it only checks the
+  # build; with the tag of an existing release it builds that tag and attaches
+  # the files to it (for a release whose own run failed, as v1.3.0's did).
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and attach to (empty: only check the build)"
+        required: false
+        default: ""
 
 permissions:
   contents: write # needed to upload assets onto the release
@@ -16,6 +22,10 @@ permissions:
 jobs:
   package:
     runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      # The release's tag, or the one given by hand; empty on a plain manual run.
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
     defaults:
       run:
         # bash on Windows too: the upload step relies on glob expansion, which
@@ -24,6 +34,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The tag's code, while the workflow itself comes from the branch run.
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref }}
 
       - uses: actions/setup-python@v7
         with:
@@ -32,10 +45,8 @@ jobs:
 
       - name: Verify the tag matches the package version
         # A mismatch would attach files named after the wrong version. Checked
-        # before anything is built; skipped on manual runs, which have no tag.
-        if: github.event_name == 'release'
-        env:
-          TAG: ${{ github.event.release.tag_name }}
+        # before anything is built; skipped on manual runs without a tag.
+        if: env.TAG != ''
         run: |
           tag_version="${TAG#v}"
           if [ -z "$tag_version" ]; then
@@ -55,7 +66,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install ".[dev]" build twine
+          # The mangago extra (Playwright) too, as in ci.yml: pyright cannot resolve
+          # src/sites/mangago.py without it, which failed v1.3.0's release run.
+          pip install ".[dev,mangago]" build twine
 
       - name: Lint and type check
         run: |
@@ -69,9 +82,9 @@ jobs:
         run: twine check dist/*
 
       - name: Attach artifacts to the release
-        if: github.event_name == 'release'
+        if: env.TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
         # --clobber so re-running the workflow on the same release replaces
         # the assets instead of failing on the second attempt.
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
+        run: gh release upload "$TAG" dist/* --clobber
