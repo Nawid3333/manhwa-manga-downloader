@@ -8,13 +8,24 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # runner-images.yml runs this on a new runner image, before and after
+  # windows-latest moves to it.
+  workflow_call:
+    inputs:
+      # No Linux job here; accepted so that every repository's CI takes the same inputs.
+      linux-runner:
+        type: string
+        default: ubuntu-latest
+      windows-runner:
+        type: string
+        default: windows-latest
 
 permissions:
   contents: read
 
 jobs:
   lint:
-    runs-on: windows-latest
+    runs-on: ${{ inputs.windows-runner || 'windows-latest' }}
 
     steps:
       - uses: actions/checkout@v7
