@@ -53,6 +53,13 @@ non-JPEG image to JPEG after each run.
 - Never trust an existing file during resume without checking it
   (`_plausible_download`): a 0-byte or magic-byte-less file must be
   re-downloaded.
+- The output layout is a contract with OmniScan's importer
+  (`src/omniscan/importer/downloader.py` there): chapter folders named
+  `num<N>_<title>` (`num0_`/`numunknown_` only when the number is unknown),
+  `.part` files while an image is in flight, and `chapter_manifest.json` /
+  `incomplete_chapters.json` in the series folder. Changing any of these
+  needs the matching change in OmniScan (see README "Translating with
+  OmniScan").
 - Never commit downloads, logs, scratch probes (`_*.py`), or secrets.
   `.gitignore` covers `downloads/`, `logs/`, `data/`, `series_*/`.
 - Definition of done for a change: `ruff check .`, `ruff format --check .`,
