@@ -191,6 +191,24 @@ check:
   download later retries only what's missing; already-good files are left
   alone.
 
+## Translating with OmniScan
+
+[OmniScan](https://github.com/Nawid3333/OmniScan) (the sibling translation
+project) imports a series folder written by this downloader as-is:
+
+```pwsh
+uv run omniscan import ..\manhwa-manga-downloader\downloads\wfwf504\1234 --series "Solo Leveling" --dry-run
+```
+
+Each `num<N>_<title>` chapter folder becomes `Chapter <N>`. OmniScan trusts
+this downloader's own records: a chapter listed in `incomplete_chapters.json`,
+one with a leftover `.part` file, or one with fewer pages than
+`chapter_manifest.json` recorded is left out with a warning. Re-run the
+download to finish it, then import again; chapters already imported are
+skipped. Chapters the downloader couldn't number (`num0_<slug>`,
+`numunknown_chapter`) are left out too. wfwf504 names the series folder after
+the site's numeric id, so pass `--series` there.
+
 ## Security
 
 Every driver-supplied folder name (series slug, chapter folder) is routed
