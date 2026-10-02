@@ -182,3 +182,53 @@ async def test_list_chapters_paginates_sorts_and_dedupes(mock_client):
 
     assert [num for _, num in result] == [1.0, 2.0, 3.0]
     assert result[0][0].endswith("/chapter-1")
+
+
+def _cdn_with_drops(page_count: int, drop: int, times: int | None):
+    """Serve `page_count` pages from the first CDN host; index `drop` raises a transport error `times` times
+    (None: always) before answering normally."""
+    dropped = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal dropped
+        url = str(request.url)
+        if not url.startswith(CDN_HOSTS[0]):
+            return httpx.Response(404)
+        idx = int(url.rsplit("/", 1)[-1].removesuffix(".webp"))
+        if idx == drop and (times is None or dropped < times):
+            dropped += 1
+            raise httpx.ReadError("connection dropped", request=request)
+        return httpx.Response(200 if idx < page_count else 404)
+
+    return handler
+
+
+async def test_image_urls_retries_a_dropped_connection_while_counting(mock_client):
+    async with mock_client(_cdn_with_drops(17, drop=8, times=2)) as client:
+        urls = await driver.image_urls(client, CHAPTER_URL)
+    assert len(urls) == 17
+
+
+async def test_image_urls_raises_rather_than_cutting_the_chapter_short(mock_client):
+    """A page the CDN never answered for must not read as "past the last page": the engine would record the
+    shorter chapter as complete. Raising lets it retry the listing instead."""
+    async with mock_client(_cdn_with_drops(17, drop=8, times=None)) as client:
+        with pytest.raises(httpx.HTTPError):
+            await driver.image_urls(client, CHAPTER_URL)
+
+
+async def test_image_urls_raises_when_throttled_past_every_retry(mock_client):
+    def handler(request: httpx.Request) -> httpx.Response:
+        idx = int(str(request.url).rsplit("/", 1)[-1].removesuffix(".webp"))
+        return httpx.Response(200) if idx == 0 else httpx.Response(429, headers={"Retry-After": "0"})
+
+    async with mock_client(handler) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await driver.image_urls(client, CHAPTER_URL)
+
+
+async def test_list_chapters_skips_slugs_without_a_number(mock_client):
+    chapters = [{"chapter_slug": "chapter-2"}, {"chapter_slug": "chapter-extra"}, {"chapter_slug": "chapter-1-5"}]
+    async with mock_client(lambda r: _chapters_page(chapters, has_more=False)) as client:
+        result = await driver.list_chapters(client, LIST_URL)
+    assert [num for _, num in result] == [1.5, 2.0]

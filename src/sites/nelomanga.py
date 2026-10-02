@@ -28,6 +28,7 @@ from term import cwarning
 BASE = "https://www.nelomanga.net"
 API_CHAPTERS = BASE + "/api/manga/{slug}/chapters"
 PAGE_SIZE = 50
+HEAD_ATTEMPTS = 6
 
 # CDN hosts serving chapter images. Chapters live on different hosts, so we
 # probe the pool per chapter and use whichever host has the chapter.
@@ -126,43 +127,72 @@ class NelomangaDriver(SiteDriver):
         """Return [(chapter_url, num), ...] sorted oldest -> newest."""
         slug = self.series_slug(list_url)
         records = await self.fetch_all_chapters(client, slug)
-        items: list[tuple[str, str]] = []
-        for rec in records:
-            ch_slug = str(rec.get("chapter_slug") or "").strip()
-            if not ch_slug:
-                continue
-            url = f"{BASE}/manga/{slug}/{ch_slug}"
-            items.append((url, ch_slug.removeprefix("chapter-").replace("-", ".")))
         # Dedupe by exact label string so 179 and 179.0 both survive.
         deduped: dict[str, str] = {}
-        for url, label in items:
-            deduped.setdefault(label, url)
-
-        def _sort_key(pair: tuple[str, str]) -> tuple[float, str]:
-            try:
-                return (float(pair[0]), pair[0])
-            except ValueError:
-                return (float("inf"), pair[0])
-
-        return [(url, float(label)) for label, url in sorted(deduped.items(), key=_sort_key)]
+        for rec in records:
+            ch_slug = str(rec.get("chapter_slug") or "").strip()
+            url = f"{BASE}/manga/{slug}/{ch_slug}"
+            # Only slugs the CDN pattern can serve (chapter-12, chapter-194-1);
+            # one like "chapter-extra" has no number to build a URL from, and
+            # float() on it would fail the whole listing.
+            if ch_slug and self.is_chapter_url(url):
+                deduped.setdefault(ch_slug.removeprefix("chapter-").replace("-", "."), url)
+        return [(url, float(label)) for label, url in sorted(deduped.items(), key=lambda p: (float(p[0]), p[0]))]
 
     @staticmethod
-    async def _head_ok(client: httpx.AsyncClient, url: str) -> bool:
-        # A 429/503 means "the CDN is throttling us", not "this page doesn't
-        # exist" — treating it as the latter corrupts the binary-search page
-        # count and can make an entire chapter look CDN-unreachable under load.
-        for attempt in range(6):
+    async def _head(client: httpx.AsyncClient, url: str, *, retry_transport: bool) -> bool:
+        """True for a 200, False for a definite miss (404 and the like).
+
+        A 429/503 means "the CDN is throttling us", not "this page doesn't
+        exist" -- treating it as the latter corrupts the binary-search page
+        count and can make an entire chapter look CDN-unreachable under load.
+        Raises httpx.HTTPError when no definite answer came: a transport
+        error (retried first when `retry_transport`), or 429/503 past every
+        retry.
+        """
+        last_exc: httpx.HTTPError | None = None
+        for attempt in range(HEAD_ATTEMPTS):
             try:
                 resp = await client.head(url)
-            except httpx.HTTPError:
-                return False
+            except httpx.HTTPError as exc:
+                if not retry_transport:
+                    raise
+                last_exc = exc
+                await asyncio.sleep(min(2.0 * (attempt + 1), 15.0))
+                continue
             if resp.status_code == 200:
                 return True
             if resp.status_code in (429, 503):
+                last_exc = httpx.HTTPStatusError(
+                    f"HEAD {url} still answered {resp.status_code} after {HEAD_ATTEMPTS} attempts",
+                    request=resp.request,
+                    response=resp,
+                )
                 await asyncio.sleep(retry_delay(resp, attempt))
                 continue
             return False
-        return False
+        assert last_exc is not None
+        raise last_exc
+
+    @classmethod
+    async def _head_ok(cls, client: httpx.AsyncClient, url: str) -> bool:
+        """Whether a CDN host serves `url`; no definite answer counts as no (it picks a host)."""
+        try:
+            return await cls._head(client, url, retry_transport=False)
+        except httpx.HTTPError:
+            return False
+
+    @classmethod
+    async def _page_exists(cls, client: httpx.AsyncClient, url: str) -> bool:
+        """Whether page `url` exists on the chosen host; raises when the CDN gives no definite answer.
+
+        Counting pages by binary search reads every "no" as "past the last
+        page", so a dropped connection or a throttled answer must never count
+        as one: it would cut the chapter short, and the engine would then
+        record that shorter chapter as complete. Raising instead lets the
+        engine retry the whole listing.
+        """
+        return await cls._head(client, url, retry_transport=True)
 
     async def image_urls(self, client: httpx.AsyncClient, chapter_url: str) -> list[str]:
         """Probe the CDN pattern for one chapter and return existing image urls."""
@@ -183,7 +213,7 @@ class NelomangaDriver(SiteDriver):
 
         # Exponential upper bound for the page count (0-based indices).
         lo, hi = 1, 8
-        while await self._head_ok(client, f"{chosen}/{slug}/{label}/{hi}.webp"):
+        while await self._page_exists(client, f"{chosen}/{slug}/{label}/{hi}.webp"):
             lo = hi + 1
             hi *= 2
             if hi > 512:
@@ -192,7 +222,7 @@ class NelomangaDriver(SiteDriver):
         # Binary search for the first missing index in [lo, hi].
         while lo < hi:
             mid = (lo + hi) // 2
-            if await self._head_ok(client, f"{chosen}/{slug}/{label}/{mid}.webp"):
+            if await self._page_exists(client, f"{chosen}/{slug}/{label}/{mid}.webp"):
                 lo = mid + 1
             else:
                 hi = mid
