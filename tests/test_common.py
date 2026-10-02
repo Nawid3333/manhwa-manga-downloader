@@ -725,3 +725,77 @@ async def test_two_urls_for_one_folder_download_once(tmp_path: Path, mock_client
 
     assert fetched == ["https://fake.test/view?num=2"]
     assert stats["complete_chapters"] == ["num2_chapter"]
+
+
+# ---- pages are named after what they are, not after their URL -------------------------------
+
+
+def _image_bytes(fmt: str) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.effect_noise((48, 48), 40).convert("RGB").save(buf, format=fmt)
+    return buf.getvalue()
+
+
+async def _download_one(tmp_path: Path, mock_client, url: str, handler) -> dict:
+    downloader = common.make_downloader(
+        site_label="fake",
+        fetch_image_urls=lambda _client, _chapter: _async([url]),
+        chapter_folder_name=lambda _url: "ch1",
+    )
+    async with mock_client(handler) as client:
+        return await downloader(client, ["https://fake.test/ch1"], tmp_path)
+
+
+async def _async(value):
+    return value
+
+
+@pytest.mark.parametrize(
+    ("url", "fmt", "saved"),
+    [
+        ("https://cdn.test/image.php?id=3", "PNG", "0001.png"),  # a script URL: the suffix is no image type
+        ("https://cdn.test/pages/1.jpg", "WEBP", "0001.webp"),  # a CDN answering a .jpg URL with WebP
+        ("https://cdn.test/pages/1", "JPEG", "0001.jpg"),  # no suffix at all
+        ("https://cdn.test/pages/1.jpeg", "JPEG", "0001.jpeg"),  # a suffix that already names the format stays
+        ("https://cdn.test/pages/1.bmp", "BMP", "0001.bmp"),
+        ("https://cdn.test/pages/1.jfif", "JPEG", "0001.jpg"),  # OmniScan's importer does not read .jfif
+    ],
+)
+async def test_a_page_is_saved_under_the_extension_of_its_real_format(
+    tmp_path: Path, mock_client, url: str, fmt: str, saved: str
+):
+    body = _image_bytes(fmt)
+    stats = await _download_one(tmp_path, mock_client, url, lambda r: httpx.Response(200, content=body))
+
+    assert stats["complete_chapters"] == ["ch1"]
+    assert sorted(p.name for p in (tmp_path / "ch1").iterdir()) == [saved]
+
+
+async def test_resume_finds_a_page_saved_under_another_extension(tmp_path: Path, mock_client):
+    (tmp_path / "ch1").mkdir()
+    (tmp_path / "ch1" / "0001.png").write_bytes(_image_bytes("PNG"))
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(404)
+
+    stats = await _download_one(tmp_path, mock_client, "https://cdn.test/image.php?id=3", handler)
+
+    assert requests == [] and stats["complete_chapters"] == ["ch1"]
+
+
+async def test_a_broken_leftover_under_another_extension_is_replaced(tmp_path: Path, mock_client):
+    (tmp_path / "ch1").mkdir()
+    (tmp_path / "ch1" / "0001.jpg").write_bytes(FAKE_JPEG_BYTES)  # truncated garbage from an earlier try
+    body = _image_bytes("PNG")
+
+    await _download_one(
+        tmp_path, mock_client, "https://cdn.test/pages/1.jpg", lambda r: httpx.Response(200, content=body)
+    )
+
+    assert sorted(p.name for p in (tmp_path / "ch1").iterdir()) == ["0001.png"]

@@ -199,6 +199,12 @@ check:
   though the site's listing still points at the original (e.g. `.webp`)
   URL — otherwise every re-run of an already-converted series would
   silently redownload everything.
+- Every page is saved under the extension of its real format, read from
+  the decoded file rather than from its URL: a page served from a script
+  URL (`image.php?id=3`), from a URL without a suffix, or as WebP from a
+  `.jpg` URL still ends up as `0001.png` / `0001.jpg` / `0001.webp`, so the
+  JPEG conversion and OmniScan's importer recognize it. Resume looks for a
+  page under every image extension for the same reason.
 - A completed chapter's image count is recorded in
   `chapter_manifest.json` inside the output directory. On a later run, if a
   chapter's folder on disk still matches that count (verified with the same
