@@ -7,12 +7,30 @@ run.
 
 ## Supported sites
 
-| Key        | Site                       | Notes                                          |
-| ---------- | -------------------------- | ---------------------------------------------- |
-| `mgread`   | mgread.io                  | paginated series listing, reader scraping      |
-| `nelomanga`| nelomanga.net (MangaNelo)  | JSON chapter API + CDN URL pattern             |
-| `wfwf504`  | wfwf504.com (늑대닷컴)      | list pages, pagination, per-chapter folders    |
-| `mangago`  | mangago.me                 | needs a logged-in session, see below           |
+| Key        | Site                          | Notes                                                        |
+| ---------- | ----------------------------- | ------------------------------------------------------------ |
+| `mgread`   | mgread.io                     | paginated series listing, reader scraping                    |
+| `nelomanga`| nelomanga.net (MangaNelo)     | JSON chapter API + CDN URL pattern                           |
+| `wfwf504`  | wfwf504.com (늑대닷컴)         | list pages, pagination, per-chapter folders                  |
+| `mangago`  | mangago.me                    | needs a logged-in session, see below                         |
+| `mangadex` | mangadex.org                  | official API; languages via `MANGADEX_LANGS`, see below      |
+| `madara`   | any Madara (WordPress theme) site | detected from the page, no fixed domains; covers hundreds of sites |
+| `generic`  | any other site (best effort)  | structural heuristics only -- works on many readers, not all |
+
+How a URL finds its driver: by domain first (the dedicated drivers above),
+and only when no domain matches, the page is fetched once and offered to
+the content-sniffing drivers in priority order -- the Madara driver claims a
+page carrying the theme's markup (`wp-manga-…` classes, `madara-core`), and
+the generic driver claims whatever is left.
+
+**The generic driver is a best-effort guess, not a promise.** It assumes the
+common shape of a reader site: a series page whose links carry a chapter
+number (`chapter-12`, `/ch/12`, `episode-3`, a trailing `/123/`), and a
+chapter page whose real pages either sit together in one container or in one
+JSON array in a script. Sites that render pages with JavaScript, encrypt
+their image lists, or sit behind a bot challenge will yield "no chapters" or
+"no images" -- check the result before relying on it, and prefer a dedicated
+driver (or ask for one) for a site you use a lot.
 
 Drivers self-register: dropping a module into `src/sites/` that exports a
 `driver` is enough to add a site. See `AGENTS.md`.
@@ -71,6 +89,17 @@ isolated by testing the identical request over HTTP/1.1, which works fine —
 so the driver's client forces HTTP/1.1 rather than needing a browser there
 too.
 
+## MangaDex
+
+The `mangadex` driver uses the official API (`api.mangadex.org`), not the
+website, and follows its rules: a descriptive User-Agent and backing off on
+`429` responses. Both series URLs (`https://mangadex.org/title/<uuid>/…`) and
+single chapter URLs (`https://mangadex.org/chapter/<uuid>`) work. The chapter
+list is filtered to the languages in `MANGADEX_LANGS` (comma-separated
+language codes, default `en`) -- set it in `.env` or the environment, e.g.
+`MANGADEX_LANGS=en,pt-br`. When several groups uploaded the same chapter
+number, the first one in the feed is used.
+
 ## Usage
 
 Interactive entry point:
@@ -81,10 +110,38 @@ python main.py
 
 It lists the supported sites, asks for a series list URL (or a single
 chapter URL), shows how many chapters were found, then asks for a range
-(`1-10`, `5`, or `all`). After the download, non-JPEG images under the
-output tree are converted to JPEG (quality 90) on all CPU cores.
+(`1-10`, `5`, `1,3,5-7`, or `all`). After the download, non-JPEG images
+under the output tree are converted to JPEG (quality 90) on all CPU cores.
 
 Output lands in `downloads/<site-key>/<series-slug>/<chapter-folder>/`.
+
+### Non-interactive (scripting)
+
+Pass the URL on the command line and the prompts go away:
+
+```pwsh
+python main.py <URL> [--chapters RANGE] [--out DIR] [--yes] [--json] [--no-convert]
+```
+
+- `--chapters RANGE` -- `all`, `5`, `1-10`, or a comma list like `1,3,5-7`.
+  Omitted: you are asked (or, with `--yes`, everything is downloaded).
+- `--out DIR` -- output directory instead of `downloads/<site>/<series>`.
+- `--yes` / `-y` -- skip the "Start download?" confirmation.
+- `--json` -- print exactly one JSON object to stdout when the run ends and
+  send every other message to stderr, so a calling script can parse stdout:
+  `{"site": "...", "out_dir": "...", "chapters": n, "images": n,
+  "failed_chapters": n, "incomplete_chapters": [...]}` (plus `"error"` when
+  the run failed).
+- `--no-convert` -- keep the downloaded images as they are (skip the JPEG
+  conversion pass).
+
+Exit code: `0` when every requested chapter completed, `2` when some
+chapters stayed incomplete after all retries (see Reliability below), `1`
+on an error (bad URL, unsupported site, empty listing, network failure).
+
+```pwsh
+python main.py https://mangadex.org/title/<uuid>/some-title --chapters 1-5 --yes --json
+```
 
 Every run also writes a timestamped log file to `logs/` (e.g.
 `logs/run_20260922_153000.log`) — the same messages shown on screen, plus
@@ -146,14 +203,15 @@ decodes to `../../..`) for every current and future site driver uniformly.
 ## Project layout
 
 ```
-main.py                interactive entry point (registry-driven, site-agnostic)
-config.py              site registry + conversion settings (self-discovery)
+main.py                entry point: interactive prompts or CLI flags (site-agnostic)
+config.py              site registry + URL resolution (domain, then content sniffing)
 term.py                terminal colour helpers (rich with plain fallback)
 src/base.py            SiteDriver abstract base class
 src/common.py          shared client, generic downloader, resume validation
 src/convert.py         post-download JPEG conversion (CPU, all cores)
 src/htmlutil.py        shared lxml/XPath parsing helpers
-src/sites/             one module per supported site (self-registering)
+src/sites/             one module per supported site (self-registering);
+                       madara.py and generic.py are content-sniffed families
 tests/                 benchmark + helper scripts (not part of the app)
 downloads/, logs/      generated at runtime (gitignored)
 ```

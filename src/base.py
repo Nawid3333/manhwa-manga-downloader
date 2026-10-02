@@ -15,6 +15,12 @@ Adding a new site = one small class with only the site-specific parts:
 
 The engine (concurrency, retries, .part writes, resume, stats) and the
 facade consumed by main.py are inherited — no plumbing needed.
+
+Drivers are normally picked by domain (`matches`). A driver that serves a
+*family* of sites rather than one host (the Madara WordPress theme, the
+best-effort generic scraper) has no domains to match; it claims a URL from
+the fetched page instead (`sniff`), and `priority` decides which claimant
+wins when several would -- see config.resolve_site.
 """
 
 from __future__ import annotations
@@ -43,6 +49,11 @@ class SiteDriver:
     name: str = ""
     domains: tuple[str, ...] = ()
     referer: str = ""  # default Referer header for this site's requests
+    # Content-sniffed resolution: when no driver matches a URL by domain the
+    # page is fetched once and every driver's sniff() is asked, highest
+    # priority first. Specific drivers (a theme with recognizable markup)
+    # sit above 0, the catch-all generic driver far below it.
+    priority: int = 0
 
     # ---- optional tuning (override) ---------------------------------------
     extra_headers: dict[str, str] | None = None
@@ -55,6 +66,10 @@ class SiteDriver:
         """True if this driver handles the URL's domain."""
         host = urlparse(url).netloc.lower()
         return any(host == d or host.endswith("." + d) for d in self.domains)
+
+    def sniff(self, url: str, html: str) -> bool:
+        """True if this driver recognizes the fetched page of a URL no driver matched by domain."""
+        return False
 
     def classify(self, url: str) -> str:
         """Return 'list', 'chapter', or 'unknown' for a URL on this site."""
@@ -87,17 +102,27 @@ class SiteDriver:
     # -----------------------------------------------------------------------
 
     def client(self, **kwargs) -> httpx.AsyncClient:
-        """AsyncClient preconfigured with this site's headers."""
+        """AsyncClient preconfigured with this site's headers.
+
+        `referer=` may be passed to override the driver's fixed referer for
+        one client -- the facade does that with referer_for(url) so a driver
+        without a fixed host can still send the right one.
+        """
+        referer = kwargs.pop("referer", self.referer or None)
         return _shared_client(
             self.base_url(),
-            referer=self.referer or None,
+            referer=referer,
             extra_headers=self.extra_headers,
             **kwargs,
         )
 
     def base_url(self) -> str:
-        """Default base url used for the client + referer."""
-        return f"https://{self.domains[0]}"
+        """Default base url used for the client + referer ('' for domainless drivers)."""
+        return f"https://{self.domains[0]}" if self.domains else ""
+
+    def referer_for(self, url: str) -> str | None:
+        """Referer for requests made on behalf of `url` (default: the driver's fixed one)."""
+        return self.referer or None
 
     def list_chapters(self, client: httpx.AsyncClient, url: str) -> Awaitable[list[tuple[str, float]]]:
         """All chapters of a series: [(chapter_url, num), ...] oldest first."""
@@ -140,10 +165,10 @@ class SiteDriver:
         """Facade used by main.py: fetch chapters, filter, download."""
         engine = self._download_engine
         if self.classify(url) == "chapter":
-            async with self.client() as c:
+            async with self.client(referer=self.referer_for(url)) as c:
                 return await engine(c, [url], out_dir, dry_run=dry_run)
 
-        async with self.client() as c:
+        async with self.client(referer=self.referer_for(url)) as c:
             links = await self.list_chapters(c, url)
             if not links:
                 raise RuntimeError("No chapters found on the series page.")
@@ -155,7 +180,7 @@ class SiteDriver:
 
     async def count_chapters(self, url: str) -> list[tuple[str, float]]:
         """Chapter listing for main.py's pre-download count/range prompt."""
-        async with self.client() as c:
+        async with self.client(referer=self.referer_for(url)) as c:
             return await self.list_chapters(c, url)
 
     # -----------------------------------------------------------------------

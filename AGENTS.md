@@ -11,16 +11,32 @@ non-JPEG image to JPEG after each run.
 
 ## Architecture
 
-- `main.py` — interactive entry point. **Completely site-agnostic**: it asks
-  for a URL, asks `config.site_for_url()` which driver matches, and delegates.
-- `config.py` — the site registry. Drivers **self-register**: any module in
-  `src/sites/` that exports a module-level `driver` (a `SiteDriver` instance)
-  is discovered automatically. Dropping a new file into `src/sites/` is
-  enough to add a site; no central list to edit.
+- `main.py` — entry point, **completely site-agnostic**: it takes a URL
+  (prompted, or from the command line), asks `config.resolve_site()` which
+  driver handles it, and delegates. Two front doors share one `run()`: the
+  interactive flow (no arguments) and the scriptable CLI
+  (`main.py URL [--chapters RANGE] [--out DIR] [--yes] [--json]
+  [--no-convert]`). `--json` routes every console message to stderr
+  (`term.set_console_stream`) so stdout carries exactly one result object;
+  exit codes are 0 / 2 (chapters stayed incomplete) / 1 (error). Chapter
+  selections are parsed by the pure `term.parse_range()` for both doors.
+- `config.py` — the site registry and URL resolution. Drivers
+  **self-register**: any module in `src/sites/` that exports a module-level
+  `driver` (a `SiteDriver` instance) is discovered automatically. Dropping a
+  new file into `src/sites/` is enough to add a site; no central list to
+  edit. `site_for_url()` matches by domain only (no network);
+  `resolve_site()` does that first and, when nothing matches, fetches the
+  page once with the plain client and offers it to every driver's `sniff()`
+  in descending `priority` — the first claimant wins.
 - `src/base.py` — `SiteDriver` abstract base class. New drivers subclass it
   and implement: `base_url`, `classify`, `list_chapters`, `image_urls`,
   `folder_name` (plus the URL-classification helpers). `matches()` on the
-  base class compares the URL host against the driver's `domains`.
+  base class compares the URL host against the driver's `domains`. A driver
+  for a *family* of sites leaves `domains` empty and instead overrides
+  `sniff(url, html)` (claim a page by its content) and sets `priority`
+  (higher wins; specific markup above 0, the catch-all far below), plus
+  `referer_for(url)` so requests carry the right origin without a fixed
+  host. The engine passes `referer_for(url)` into `client()` for every run.
 - `src/common.py` — shared HTTP client setup (limits, retries) and the
   generic downloader (`make_downloader`): concurrency-capped image fetching,
   `.part` atomic writes, resume logic with `_plausible_download` validation
@@ -34,6 +50,21 @@ non-JPEG image to JPEG after each run.
 - `src/sites/mangago.py` — mangago.me driver (logged-in session required;
   headless Playwright reads chapter image URLs the site encrypts
   client-side, see README.md "Why mangago needs an account").
+- `src/sites/mangadex.py` — mangadex.org driver over the official API
+  (feed paging by `total`, `MANGADEX_LANGS`, MangaDex@Home image nodes,
+  descriptive User-Agent, 429 backoff). Chapter numbers are remembered per
+  chapter id because chapter URLs only carry a UUID.
+- `src/sites/madara.py` — content-sniffed driver (`priority = 10`, no
+  domains) for every site built on the Madara WordPress theme: three-step
+  chapter listing (inline → `ajax/chapters/` → `admin-ajax.php`), lazy-load
+  aware reader scraping.
+- `src/sites/generic.py` — best-effort fallback (`priority = -100`,
+  `sniff()` claims any HTML). Pure heuristics: chapter-number patterns in
+  URLs, same-host chapter links (preferring those under the series path),
+  and "largest group of images wins" (shared container in the DOM or one
+  JSON array in a script) after dropping obvious non-page images. It is
+  the last resort, never the first: any domain match or Madara sniff
+  outranks it.
 - `tests/mangago_login.py` — standalone (non-pytest) login helper for the
   mangago driver: drives a real headless Firefox through mangago's
   captcha-gated login and saves the resulting session to `.env`.
@@ -72,7 +103,11 @@ non-JPEG image to JPEG after each run.
 ## Adding a site
 
 1. Copy the shape of an existing driver in `src/sites/`.
-2. Subclass `SiteDriver`, set `key`, `name`, `domains`.
+2. Subclass `SiteDriver`, set `key`, `name`, `domains` (or, for a family of
+   sites recognizable from their markup, leave `domains` empty and
+   implement `sniff()` with a `priority` above the generic driver's).
 3. Implement `classify`, `list_chapters`, `image_urls`, `folder_name`.
 4. Export `driver = MyDriver()` at module level — discovery picks it up.
 5. Update the README sites table.
+6. Tests stay hermetic (`httpx.MockTransport` via the `mock_client`
+   fixture); never hit a live site from the suite.

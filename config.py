@@ -3,18 +3,28 @@
 Drivers self-register: any module in src/sites/ that exports a `driver`
 (a SiteDriver instance) is discovered automatically — dropping a new file
 into src/sites/ is enough to add a site.
+
+A URL is resolved to a driver in two steps (resolve_site): by domain first
+(site_for_url, no network), and only when nothing matches is the page
+fetched once and offered to every driver's sniff() in descending priority.
+Domain matches stay authoritative so a site with a dedicated driver is
+never handed to the generic fallback just because it also looks generic.
 """
 
 from __future__ import annotations
 
 import importlib
 import pkgutil
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv
 
 from src.base import SiteDriver
+from src.common import client as _plain_client
+from term import log_debug
 
 ROOT_DIR = Path(__file__).resolve().parent
 DOWNLOADS_DIR = ROOT_DIR / "downloads"
@@ -89,6 +99,43 @@ def site_for_url(url: str) -> Site | None:
         if site.driver.matches(url):
             return site
     return None
+
+
+async def fetch_page_html(url: str) -> str:
+    """Fetch a page once with the plain browser-like client (redirects followed)."""
+    async with _plain_client("", follow_redirects=True) as c:
+        resp = await c.get(url)
+        resp.raise_for_status()
+        return resp.text
+
+
+def sniff_site(url: str, html: str) -> Site | None:
+    """Offer fetched page content to every driver's sniff(), highest priority first."""
+    ranked = sorted(SUPPORTED_SITES.values(), key=lambda s: s.driver.priority, reverse=True)
+    for site in ranked:
+        if site.driver.sniff(url, html):
+            return site
+    return None
+
+
+async def resolve_site(url: str, *, fetch_html: Callable[[str], Awaitable[str]] | None = None) -> Site | None:
+    """Return the site for a URL: domain match first, else by sniffing the fetched page.
+
+    `fetch_html` exists so callers (and tests) can substitute the page fetch;
+    the default goes to the network once. A page that cannot be fetched at
+    all resolves to None rather than to the generic fallback -- a download
+    from it could not succeed either.
+    """
+    site = site_for_url(url)
+    if site is not None:
+        return site
+    fetch = fetch_html or fetch_page_html
+    try:
+        html = await fetch(url)
+    except httpx.HTTPError as exc:
+        log_debug(f"resolve_site: could not fetch {url} for sniffing: {exc}")
+        return None
+    return sniff_site(url, html)
 
 
 def classify_url(url: str, site: Site) -> str:

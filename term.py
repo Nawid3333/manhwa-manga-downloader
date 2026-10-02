@@ -2,16 +2,21 @@
 
 Provides a plain-terminal fallback if `rich` is missing or if stdout is not a
 TTY. This mirrors the style used in the sibling scraper projects.
+
+Everything goes to one switchable stream (set_console_stream): main.py's
+`--json` mode points it at stderr so stdout carries nothing but the final
+JSON object a calling script will parse.
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
+import sys
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 # Mirrors every cinfo/cwarning/cerror/csuccess call into a per-run log file
 # (see init_file_logging, called once from main.py) so a run is
@@ -21,6 +26,8 @@ from typing import Any
 _file_logger = logging.getLogger("mangadl")
 _file_logger.setLevel(logging.DEBUG)
 _file_logger.propagate = False
+
+_stream: IO[str] = sys.stdout
 
 _rich_ok = False
 try:
@@ -35,8 +42,16 @@ except Exception:  # pragma: no cover - fallback
     _console = None
 
 
-def _plain_print(message: str = "") -> None:
-    print(message)
+def set_console_stream(stream: IO[str]) -> None:
+    """Send every console message (rich or plain) to `stream` from now on."""
+    global _console, _stream
+    _stream = stream
+    if _rich_ok:
+        _console = Console(file=stream)
+
+
+def _plain_print(message: str = "", *, end: str = "\n") -> None:
+    print(message, end=end, file=_stream)
 
 
 def cprint(
@@ -57,7 +72,7 @@ def cprint(
         prefix = ""
         if title:
             prefix = f"[{title}] "
-        print(prefix + message)
+        _plain_print(prefix + message)
 
 
 def cinput(prompt: str, *, color: str = "cyan") -> str:
@@ -65,7 +80,7 @@ def cinput(prompt: str, *, color: str = "cyan") -> str:
     if _rich_ok and _console is not None:
         _console.print(Text(prompt, style=color), end="")
     else:
-        print(prompt, end="")
+        _plain_print(prompt, end="")
     try:
         return input()
     except (EOFError, KeyboardInterrupt):
@@ -76,7 +91,7 @@ def cconfirm(prompt: str, default: bool = True) -> bool:
     """Ask a yes/no question."""
     if _rich_ok and _console is not None:
         try:
-            return Confirm.ask(Text(prompt, style="yellow"), default=default)
+            return Confirm.ask(Text(prompt, style="yellow"), default=default, console=_console)
         except Exception:
             pass
     suffix = " [Y/n]" if default else " [y/N]"
@@ -138,7 +153,7 @@ def pause(message: str = "Press Enter to exit...") -> None:
     if _rich_ok and _console is not None:
         _console.print(Text(message, style="dim"))
     else:
-        print(message)
+        _plain_print(message)
     with contextlib.suppress(EOFError, KeyboardInterrupt):
         input()
 
@@ -148,7 +163,7 @@ def clear() -> None:
     if _rich_ok and _console is not None:
         _console.clear()
     else:
-        print("\033[2J\033[H", end="")
+        _plain_print("\033[2J\033[H", end="")
 
 
 def list_sites_table(sites: Mapping[str, Any]) -> None:
@@ -165,9 +180,9 @@ def list_sites_table(sites: Mapping[str, Any]) -> None:
             table.add_row(getattr(site, "key", "?"), getattr(site, "name", "?"), domains)
         _console.print(table)
     else:
-        print("Supported sites:")
+        _plain_print("Supported sites:")
         for site in sites.values():
-            print(f"  - {getattr(site, 'key', '?')}: {getattr(site, 'name', '?')}")
+            _plain_print(f"  - {getattr(site, 'key', '?')}: {getattr(site, 'name', '?')}")
 
 
 def prompt_choice(prompt: str, choices: list[str]) -> str:
@@ -187,22 +202,43 @@ def prompt_choice(prompt: str, choices: list[str]) -> str:
         cerror("Invalid choice. Please enter a number or exact label.")
 
 
-def prompt_range(total: int) -> list[int]:
-    """Ask for a chapter range such as '1-10', 'all', or a single number."""
-    raw = cinput(f"Which chapters? (1-{total}, range like 1-10, or 'all'): ", color="yellow").strip()
-    if raw.lower() in ("all", "*", ""):
+def parse_range(text: str, total: int) -> list[int]:
+    """Parse a chapter selection into sorted chapter numbers within 1..total.
+
+    Accepts 'all' (also '*' or blank), a single number ('5'), a range
+    ('1-10'), and comma lists mixing both ('1,3,5-7'). Ranges are clamped to
+    1..total and single numbers outside it are dropped, so the result can be
+    empty; text that is not a selection at all raises ValueError.
+    """
+    raw = text.strip().lower()
+    if raw in ("all", "*", ""):
         return list(range(1, total + 1))
-    if "-" in raw:
+    selected: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
         try:
-            start, end = raw.split("-", 1)
-            start_num = int(start.strip())
-            end_num = int(end.strip())
-            return list(range(max(1, start_num), min(total, end_num) + 1))
+            if "-" in part:
+                start_text, end_text = part.split("-", 1)
+                start, end = int(start_text), int(end_text)
+                if start > end:
+                    raise ValueError(part)
+                selected.update(range(max(1, start), min(total, end) + 1))
+            else:
+                num = int(part)
+                if 1 <= num <= total:
+                    selected.add(num)
         except ValueError:
-            pass
-    if raw.isdigit():
-        num = int(raw)
-        if 1 <= num <= total:
-            return [num]
-    cwarning(f"Could not parse '{raw}' — downloading all chapters instead.")
-    return list(range(1, total + 1))
+            raise ValueError(f"Could not parse chapter selection {text!r}") from None
+    return sorted(selected)
+
+
+def prompt_range(total: int) -> list[int]:
+    """Ask for a chapter range such as '1-10', '1,3,5-7', 'all', or a single number."""
+    raw = cinput(f"Which chapters? (1-{total}, range like 1-10, list like 1,3,5-7, or 'all'): ", color="yellow")
+    try:
+        return parse_range(raw, total)
+    except ValueError:
+        cwarning(f"Could not parse '{raw.strip()}' — downloading all chapters instead.")
+        return list(range(1, total + 1))
