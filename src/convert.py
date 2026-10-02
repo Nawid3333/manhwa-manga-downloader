@@ -74,6 +74,25 @@ def _jpeg_dest(src: Path) -> Path:
     return src.with_suffix(".jpg")
 
 
+def _flatten_for_jpeg(img: Image.Image) -> Image.Image:
+    """An RGB/L image JPEG can encode; transparent pixels land on white, not black.
+
+    JPEG has no alpha channel, and a plain `.convert("RGB")` drops it by
+    painting the transparent area black -- on a webtoon PNG with a transparent
+    background that turns every gutter into a black slab. Compositing onto
+    white matches what the page looked like in a reader.
+    """
+    if img.mode in ("RGB", "L"):
+        return img
+    has_alpha = img.mode in ("RGBA", "LA", "PA") or (img.mode == "P" and "transparency" in img.info)
+    if not has_alpha:
+        return img.convert("RGB")
+    rgba = img.convert("RGBA")
+    flattened = Image.new("RGB", rgba.size, (255, 255, 255))
+    flattened.paste(rgba, mask=rgba.getchannel("A"))
+    return flattened
+
+
 # ---------------------------------------------------------------------------
 # CPU backend (worker must be module-level for Windows spawn pickling)
 # ---------------------------------------------------------------------------
@@ -90,9 +109,7 @@ def _convert_one(args: tuple[str, int]) -> tuple[bool, str, int, int, str]:
         with src.open("rb") as f:
             img = Image.open(f)
             img.load()
-        img = ImageOps.exif_transpose(img)
-        if img.mode not in ("RGB", "L"):
-            img = img.convert("RGB")
+        img = _flatten_for_jpeg(ImageOps.exif_transpose(img))
         tmp = dest.with_suffix(".jpg.part")
         img.save(tmp, format="JPEG", quality=quality)
         tmp.replace(dest)

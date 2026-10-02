@@ -37,7 +37,7 @@ try:
     from rich.text import Text
 
     _console = Console()
-    _rich_ok = _console.is_terminal or True
+    _rich_ok = True
 except Exception:  # pragma: no cover - fallback
     _console = None
 

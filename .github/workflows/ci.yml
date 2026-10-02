@@ -1,6 +1,10 @@
-# Runs lint, type check, and the (fully hermetic) test suite on every push
-# and pull request. Drivers talk to live sites, which CI cannot do reliably,
-# so tests go through httpx.MockTransport instead -- see tests/conftest.py.
+# Runs lint, format check, type check and the (fully hermetic) test suite on
+# every push and pull request, on both operating systems the project supports
+# and on the oldest and newest Python it runs on. Drivers talk to live sites,
+# which CI cannot do reliably, so tests go through httpx.MockTransport
+# instead -- see tests/conftest.py (live-smoke.yml is the one scheduled
+# exception). A second job builds the package the way release.yml will, so a
+# broken pyproject.toml is found on the pull request, not at release time.
 name: CI
 
 on:
@@ -8,11 +12,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Runnable by hand from the Actions tab, on any branch.
+  workflow_dispatch:
   # runner-images.yml runs this on a new runner image, before and after
-  # windows-latest moves to it.
+  # ubuntu-latest / windows-latest move to it.
   workflow_call:
     inputs:
-      # No Linux job here; accepted so that every repository's CI takes the same inputs.
       linux-runner:
         type: string
         default: ubuntu-latest
@@ -23,28 +28,36 @@ on:
 permissions:
   contents: read
 
+# One run per branch: a newer push to a pull request cancels the run of the
+# commit it replaced. A push to main is never cancelled, because
+# auto-release.yml waits for exactly that run's result. The runner inputs
+# keep runner-images.yml's two calls (current image, next image) apart.
+concurrency:
+  group: ci-${{ github.ref }}-${{ inputs.linux-runner || 'ubuntu-latest' }}-${{ inputs.windows-runner || 'windows-latest' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  lint:
-    runs-on: ${{ inputs.windows-runner || 'windows-latest' }}
+  check:
+    name: ${{ matrix.runner }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ${{ inputs.windows-runner || 'windows-latest' }}
+          - ${{ inputs.linux-runner || 'ubuntu-latest' }}
+        # The floor declared in requires-python (testing the oldest supported
+        # version is what catches a newer-only API slipping in) and the
+        # newest release (what catches a dependency's deprecation first).
+        python: ["3.11", "3.13"]
 
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      - uses: ./.github/actions/install
         with:
-          # The floor declared in requires-python: testing the oldest
-          # supported version is what catches a newer-only API slipping in.
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install ".[dev]"
-          # Not installed for its own sake -- CI never runs a real browser --
-          # just so pyright can resolve src/sites/mangago.py's import.
-          pip install ".[mangago]"
+          python-version: ${{ matrix.python }}
 
       - name: Lint
         run: python -m ruff check .
@@ -57,3 +70,24 @@ jobs:
 
       - name: Test
         run: python -m pytest
+
+  package:
+    name: Package build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install build tools
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Check package metadata
+        run: twine check dist/*

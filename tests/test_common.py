@@ -173,6 +173,27 @@ async def test_download_series_writes_images(tmp_path: Path, mock_client, jpeg_b
     assert not (tmp_path / "incomplete_chapters.json").exists()
 
 
+class _DroppedStream(httpx.AsyncByteStream):
+    """A body that starts like a JPEG and then dies: the shape of a dropped HTTP/2 stream."""
+
+    async def __aiter__(self):
+        yield b"\xff\xd8" + b"\x00" * 2048
+        raise httpx.ReadError("connection dropped")
+
+
+async def test_download_series_leaves_no_part_file_after_a_dropped_stream(tmp_path: Path, mock_client):
+    downloader = common.make_downloader(
+        site_label="fake",
+        fetch_image_urls=_make_fetch(1),
+        chapter_folder_name=lambda url: url.rsplit("/", 1)[-1],
+    )
+    async with mock_client(lambda r: httpx.Response(200, stream=_DroppedStream())) as client:
+        stats = await downloader(client, ["https://fake.test/ch1"], tmp_path)
+
+    assert stats["incomplete_chapters"] == ["ch1"]
+    assert list((tmp_path / "ch1").iterdir()) == []
+
+
 async def test_download_series_skips_existing_plausible_file(tmp_path: Path, mock_client, jpeg_bytes: bytes):
     calls: list[str] = []
 

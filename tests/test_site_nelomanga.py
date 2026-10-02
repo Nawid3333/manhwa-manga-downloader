@@ -32,13 +32,13 @@ def test_classify_unknown_url():
     assert driver.classify("https://www.nelomanga.net/search?q=x") == "unknown"
 
 
-def test_chapter_label_converts_dashes_to_dots():
-    assert driver.chapter_label(FRACTIONAL_CHAPTER_URL) == "194.1"
-    assert driver.chapter_label(CHAPTER_URL) == "37"
+def test_cdn_label_converts_dashes_to_dots():
+    assert driver.cdn_label(FRACTIONAL_CHAPTER_URL) == "194.1"
+    assert driver.cdn_label(CHAPTER_URL) == "37"
 
 
-def test_chapter_label_none_for_non_chapter_url():
-    assert driver.chapter_label(LIST_URL) is None
+def test_cdn_label_none_for_non_chapter_url():
+    assert driver.cdn_label(LIST_URL) is None
 
 
 def test_chapter_num():

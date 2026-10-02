@@ -84,6 +84,24 @@ def test_run_cpu_converts_png_to_jpeg_and_removes_source(tmp_path: Path):
         assert img.format == "JPEG"
 
 
+def test_run_cpu_flattens_transparency_onto_white(tmp_path: Path):
+    """JPEG has no alpha; a transparent background must come out white, not the black `.convert("RGB")` gives."""
+    src = tmp_path / "page.png"
+    img = Image.new("RGBA", (32, 32), color=(0, 0, 0, 0))
+    img.paste((200, 30, 30, 255), (0, 0, 16, 32))  # left half opaque red, right half transparent
+    img.save(src, format="PNG")
+
+    stats = run_cpu([src], workers=1)
+
+    assert stats.converted == 1
+    with Image.open(tmp_path / "page.jpg") as out:
+        assert out.mode == "RGB"
+        r, g, b = out.getpixel((28, 16))  # type: ignore[misc]
+        assert min(r, g, b) > 230, (r, g, b)
+        r, g, b = out.getpixel((3, 16))  # type: ignore[misc]
+        assert r > 150 and g < 100 and b < 100, (r, g, b)
+
+
 def test_run_cpu_reports_failure_for_unreadable_file(tmp_path: Path):
     src = tmp_path / "broken.webp"
     src.write_bytes(b"this is not actually image data")

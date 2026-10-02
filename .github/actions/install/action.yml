@@ -1,0 +1,33 @@
+# The one place the project gets installed in CI, shared by ci.yml,
+# release.yml and live-smoke.yml so the three cannot drift apart (release.yml
+# once failed because it lacked an extra ci.yml had). The mangago extra
+# (Playwright) is installed only so pyright can resolve src/sites/mangago.py;
+# no workflow runs a browser.
+name: Install the project
+description: Set up Python with pip caching and install the project with its dev and mangago extras.
+
+inputs:
+  python-version:
+    description: Python version to set up
+    required: false
+    default: "3.11"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v7
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: pip
+        # The dev and mangago extras live in pyproject.toml, so the cache has
+        # to turn over when that file changes, not only requirements.txt.
+        cache-dependency-path: |
+          requirements.txt
+          pyproject.toml
+
+    - name: Install
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install ".[dev,mangago]"

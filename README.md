@@ -280,17 +280,20 @@ pyright
 pytest
 ```
 
-CI runs all four on every push/PR (see `.github/workflows/ci.yml`), and
-again before an automated release is allowed to publish (see
+CI runs all four on every push/PR on Windows and Linux, on Python 3.11 and
+3.13, and builds the package (see `.github/workflows/ci.yml`); an automated
+release is only allowed to publish after that run is green (see
 `.github/workflows/auto-release.yml`). The test suite is fully hermetic —
 every driver's HTTP calls go through `httpx.MockTransport`, never a live
 site (see `tests/conftest.py`) — so it runs the same on a laptop or a CI
-runner. `tests/benchmark_convert.py` and `tests/benchmark_server.py` are
-separate, standalone scripts — the first benchmarks the conversion pipeline
-on synthetic images, the second measures a real site's safe concurrency by
-ramping request load against a real chapter's images
-(`python -m tests.benchmark_server <chapter-or-series-url>`); neither is
-part of the `pytest` run.
+runner. The one live check is `.github/workflows/live-smoke.yml`: once a
+week it downloads a recent MangaDex chapter through the CLI and opens an
+issue if that stops working. `tests/benchmark_convert.py` and
+`tests/benchmark_server.py` are separate, standalone scripts — the first
+benchmarks the conversion pipeline on synthetic images, the second measures
+a real site's safe concurrency by ramping request load against a real
+chapter's images (`python -m tests.benchmark_server <chapter-or-series-url>`);
+neither is part of the `pytest` run.
 
 ## License
 

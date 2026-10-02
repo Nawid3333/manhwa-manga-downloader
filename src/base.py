@@ -26,6 +26,7 @@ wins when several would -- see config.resolve_site.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -158,7 +159,7 @@ class SiteDriver:
     async def download_series_url(
         self,
         url: str,
-        out_dir,
+        out_dir: Path,
         chapters: list[int] | None = None,
         dry_run: bool = False,
     ) -> dict[str, Any]:
@@ -190,6 +191,30 @@ class SiteDriver:
     @staticmethod
     def safe(text: str | None) -> str:
         return clean_name(text)
+
+    @staticmethod
+    def chapter_label(num: float) -> str:
+        """'12' for 12.0, '12.5' for 12.5: a chapter number without a spurious decimal tail."""
+        if num.is_integer():
+            return str(int(num))
+        return f"{num:.3f}".rstrip("0").rstrip(".")
+
+    def chapter_folder(self, num: float | None) -> str:
+        """The standard chapter folder name, `num<N>_Chapter <N>` (`num0_Chapter unknown` without a number).
+
+        This is the layout OmniScan's importer reads (see AGENTS.md), so a
+        driver that knows nothing but the chapter number should use it.
+        """
+        if num is None:
+            return f"num0_{self.safe('Chapter unknown')}"
+        return f"num{num:g}_{self.safe(f'Chapter {self.chapter_label(num)}')}"
+
+    @staticmethod
+    async def fetch_text(client: httpx.AsyncClient, url: str) -> str:
+        """GET a page and return its body, raising on an HTTP error status."""
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.text
 
     @staticmethod
     def warn(message: str) -> None:

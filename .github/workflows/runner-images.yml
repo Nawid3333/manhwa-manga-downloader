@@ -7,8 +7,8 @@ name: Runner images
 # switch, and only speaks up when something needs editing.
 #
 # Once a day it reads GitHub's list of images (the actions/runner-images README): the
-# image behind each -latest label this repository relies on (windows-latest), and the
-# newest generally available one. Then:
+# image behind each -latest label this repository relies on (ubuntu-latest and
+# windows-latest), and the newest generally available one. Then:
 # - Next image: once a newer image exists than -latest gives, CI runs on it, a
 #   warning before the switch.
 # - The switch: when -latest moves, CI runs on the image it now gives, once more.
@@ -32,7 +32,7 @@ permissions:
 
 env:
   # The runners this repository uses; only a change to these triggers a run.
-  OSES: windows
+  OSES: linux windows
 
 jobs:
   detect:

@@ -21,6 +21,7 @@ import asyncio
 import os
 import re
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -95,19 +96,13 @@ class MangaDexDriver(SiteDriver):
 
     # ---- site specifics ----------------------------------------------------
 
-    @staticmethod
-    def chapter_label(num: float) -> str:
-        if num.is_integer():
-            return str(int(num))
-        return f"{num:.3f}".rstrip("0").rstrip(".")
-
     def folder_name(self, chapter_url: str) -> str:
         chapter_id = self.chapter_id(chapter_url) or ""
         num = self._numbers.get(chapter_id)
         if num is None:
             label = chapter_id[:8] or "unknown"
             return f"num0_{self.safe(f'Chapter {label}')}"
-        return f"num{num:g}_{self.safe(f'Chapter {self.chapter_label(num)}')}"
+        return self.chapter_folder(num)
 
     async def api_get(self, client: httpx.AsyncClient, path: str, params: Any = None) -> dict[str, Any]:
         """GET an API path as JSON, backing off on 429/503 the way the API asks."""
@@ -201,7 +196,7 @@ class MangaDexDriver(SiteDriver):
     async def download_series_url(
         self,
         url: str,
-        out_dir,
+        out_dir: Path,
         chapters: list[int] | None = None,
         dry_run: bool = False,
     ) -> dict[str, Any]:

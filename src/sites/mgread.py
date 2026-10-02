@@ -69,29 +69,20 @@ class MgreadDriver(SiteDriver):
         except ValueError:
             return None
 
-    @staticmethod
-    def chapter_label(num: float) -> str:
-        if num.is_integer():
-            return str(int(num))
-        return f"{num:.3f}".rstrip("0").rstrip(".")
-
     def folder_name(self, chapter_url: str) -> str:
-        num = self.chapter_num_from_url(chapter_url)
-        label = self.chapter_label(num) if num is not None else "unknown"
-        title = f"Chapter {label}"
-        return f"num{num:g}_{self.safe(title)}" if num is not None else f"num0_{self.safe(title)}"
+        return self.chapter_folder(self.chapter_num_from_url(chapter_url))
 
     async def list_chapters(self, client: httpx.AsyncClient, list_url: str) -> list[tuple[str, float]]:
         """Return [(chapter_url, num), ...] sorted oldest -> newest."""
         slug = self.series_slug(list_url)
-        first_html = await self._page_html(client, list_url)
+        first_html = await self.fetch_text(client, list_url)
 
         pages = self.parse_pagination_pages(first_html)
         semaphore = asyncio.Semaphore(CHAPTER_PAGE_CONCURRENCY)
 
         async def _fetch_page(p: int) -> list[tuple[str, float]]:
             async with semaphore:
-                html = await self._page_html(client, f"{BASE}/manga/{slug}/chapter/page/{p}/")
+                html = await self.fetch_text(client, f"{BASE}/manga/{slug}/chapter/page/{p}/")
                 return self.parse_chapter_links(html)
 
         results = await asyncio.gather(*(_fetch_page(p) for p in pages), return_exceptions=True)
@@ -111,7 +102,7 @@ class MgreadDriver(SiteDriver):
         """Scrape reader page and return image urls (data-original-src preferred)."""
         if not chapter_url.endswith("/"):
             chapter_url += "/"
-        html = await self._page_html(client, chapter_url)
+        html = await self.fetch_text(client, chapter_url)
         doc = parse_html(html)
         urls: list[str] = []
         for img in all_of(doc, "//img"):
@@ -122,12 +113,6 @@ class MgreadDriver(SiteDriver):
         return urls
 
     # ---- page parsing helpers ----------------------------------------------
-
-    @staticmethod
-    async def _page_html(client: httpx.AsyncClient, url: str) -> str:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        return resp.text
 
     @staticmethod
     def parse_chapter_links(html: str) -> list[tuple[str, float]]:
