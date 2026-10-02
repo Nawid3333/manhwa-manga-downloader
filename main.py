@@ -1,20 +1,30 @@
 """Multi-site manhwa/manga downloader entry point.
 
 Site drivers live in src/sites/ and self-register (see config.py). main.py is
-completely site-agnostic: it asks for a URL, finds the driver, and delegates.
+completely site-agnostic: it takes a URL, finds the driver, and delegates.
+
+Two front doors share one run: the interactive flow (no arguments: prompts
+for the URL, the range and a confirmation, and pauses before exiting so a
+double-clicked window stays readable) and a scriptable one (URL on the
+command line, `--chapters`, `--out`, `--yes`, `--json`). In `--json` mode
+every console message is routed to stderr so stdout carries exactly one
+JSON object for the calling script, and the exit code says how the run
+ended: 0 complete, 2 some chapters stayed incomplete, 1 error.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
-from config import CONVERT_TO_JPEG, DOWNLOADS_DIR, LOGS_DIR, classify_url, site_for_url
+from config import CONVERT_TO_JPEG, DOWNLOADS_DIR, JPEG_QUALITY, LOGS_DIR, Site, classify_url, resolve_site
 from src.convert import convert_tree
 from term import (
     cconfirm,
@@ -26,9 +36,15 @@ from term import (
     cwarning,
     init_file_logging,
     list_sites_table,
+    parse_range,
     pause,
     prompt_range,
+    set_console_stream,
 )
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_INCOMPLETE = 2
 
 
 def banner() -> str:
@@ -85,68 +101,114 @@ async def _count_chapters(driver, url: str):
     return await driver.count_chapters(url)
 
 
-def main() -> None:
-    log_path = init_file_logging(LOGS_DIR)
-    cprint(banner(), color="cyan", panel=True)
-    cinfo(f"Logging to {log_path}")
-    supported_sites()
+def build_parser() -> argparse.ArgumentParser:
+    """Command-line interface; with no URL the interactive flow runs instead."""
+    parser = argparse.ArgumentParser(prog="mangadl", description=banner())
+    parser.add_argument("url", nargs="?", help="series list URL or chapter URL (omit for the interactive prompt)")
+    parser.add_argument(
+        "--chapters",
+        metavar="RANGE",
+        help="chapters to download: 'all', '5', '1-10' or '1,3,5-7' (default: prompt, or all with --yes)",
+    )
+    parser.add_argument("--out", metavar="DIR", type=Path, help="output directory (default: downloads/<site>/<series>)")
+    parser.add_argument("--yes", "-y", action="store_true", help="skip the confirmation prompt")
+    parser.add_argument(
+        "--json", action="store_true", help="print one JSON result object to stdout, messages to stderr"
+    )
+    parser.add_argument(
+        "--no-convert", action="store_true", help="keep downloaded images as-is (skip the post-run JPEG conversion)"
+    )
+    return parser
 
-    raw = cinput("\nPaste a series list URL or chapter URL: ", color="green")
-    url, err = resolve_input(raw)
-    if err:
-        cerror(err)
-        pause()
-        sys.exit(1)
 
-    site = site_for_url(url)
-    if site is None:
-        cerror("Unsupported site. Supported domains are listed above.")
-        pause()
-        sys.exit(1)
-    driver = site.driver
+class RunError(Exception):
+    """A run that cannot continue; the message is for the user."""
 
-    kind = classify_url(url, site)
-    if kind == "chapter":
-        cinfo("Chapter URL detected — only this chapter will be downloaded.")
-        chapters = None
-        out_dir = DOWNLOADS_DIR / driver.key / driver.single_chapter_folder()
-    elif kind == "list":
-        out_dir = choose_output_dir(url, driver)
-        cinfo(f"Series folder: {out_dir}")
 
+def _select_chapters(args: argparse.Namespace, total: int, interactive: bool) -> list[int] | None:
+    """Chapter numbers to download for a list URL (None = all)."""
+    if args.chapters is not None:
+        text = args.chapters.strip().lower()
+        if text in ("all", "*", ""):
+            return None
         try:
-            links = asyncio.run(_count_chapters(driver, url))
-        except Exception as exc:
-            cerror(f"Could not read chapter list: {exc}")
-            pause()
-            sys.exit(1)
+            selected = parse_range(args.chapters, total)
+        except ValueError as exc:
+            raise RunError(str(exc)) from None
+        if not selected:
+            raise RunError(f"No chapters in 1-{total} match {args.chapters!r}.")
+        return selected
+    if args.yes and not interactive:
+        return None
+    selected = prompt_range(total)
+    if not selected:
+        raise RunError("No chapters selected.")
+    return selected
 
-        total = len(links)
-        if total == 0:
-            cerror("No chapters found on that list page.")
-            pause()
-            sys.exit(1)
 
-        cinfo(f"Found {total} chapter(s).")
-        chapters = prompt_range(total)
-        if not chapters:
-            cwarning("No chapters selected.")
-            pause()
-            sys.exit(0)
-    else:
-        cerror("Could not determine whether this is a list or chapter URL.")
-        pause()
-        sys.exit(1)
+def _result(site: Site | None, out_dir: Path | None, stats: dict[str, Any] | None, error: str | None) -> dict[str, Any]:
+    stats = stats or {}
+    result: dict[str, Any] = {
+        "site": site.key if site else None,
+        "out_dir": str(out_dir) if out_dir else None,
+        "chapters": int(stats.get("chapters", 0)),
+        "images": int(stats.get("images", 0)),
+        "failed_chapters": int(stats.get("failed_chapters", 0)),
+        "incomplete_chapters": list(stats.get("incomplete_chapters") or []),
+    }
+    if error:
+        result["error"] = error
+    return result
 
-    cinfo(f"Output directory: {out_dir}")
-    note_previous_incomplete(out_dir)
-    if not cconfirm("Start download?", default=True):
-        cinfo("Aborted.")
-        pause()
-        sys.exit(0)
 
+def run(args: argparse.Namespace, *, interactive: bool) -> tuple[int, dict[str, Any]]:
+    """One download run; returns (exit code, result object) and never raises for user-facing errors."""
+    site: Site | None = None
+    out_dir: Path | None = None
     try:
-        stats = asyncio.run(driver.download_series_url(url, out_dir, chapters=chapters))
+        raw = cinput("\nPaste a series list URL or chapter URL: ", color="green") if interactive else args.url
+        url, err = resolve_input(raw)
+        if err:
+            raise RunError(err)
+
+        site = asyncio.run(resolve_site(url))
+        if site is None:
+            raise RunError("Unsupported site: no driver matched the domain and the page could not be fetched.")
+        driver = site.driver
+        if site.key == "generic":
+            cwarning("No dedicated driver for this site — using the best-effort generic scraper.")
+        else:
+            cinfo(f"Site: {site.name}")
+
+        kind = classify_url(url, site)
+        override: Path | None = Path(args.out) if args.out else None
+        if kind == "chapter":
+            cinfo("Chapter URL detected — only this chapter will be downloaded.")
+            chapters = None
+            target = override or DOWNLOADS_DIR / driver.key / driver.single_chapter_folder()
+        elif kind == "list":
+            target = override or choose_output_dir(url, driver)
+            cinfo(f"Series folder: {target}")
+            try:
+                links = asyncio.run(_count_chapters(driver, url))
+            except Exception as exc:
+                raise RunError(f"Could not read chapter list: {exc}") from exc
+            total = len(links)
+            if total == 0:
+                raise RunError("No chapters found on that list page.")
+            cinfo(f"Found {total} chapter(s).")
+            chapters = _select_chapters(args, total, interactive)
+        else:
+            raise RunError("Could not determine whether this is a list or chapter URL.")
+        out_dir = target
+
+        cinfo(f"Output directory: {target}")
+        note_previous_incomplete(target)
+        if not args.yes and not cconfirm("Start download?", default=True):
+            cinfo("Aborted.")
+            return EXIT_OK, _result(site, out_dir, None, None)
+
+        stats = asyncio.run(driver.download_series_url(url, target, chapters=chapters))
         csuccess(f"Done! {stats.get('chapters', 0)} chapter(s), {stats.get('images', 0)} image(s) downloaded.")
         incomplete = stats.get("incomplete_chapters") or []
         if incomplete:
@@ -155,18 +217,47 @@ def main() -> None:
                 "Recorded in incomplete_chapters.json under the output directory — "
                 "re-running this same download will retry only what's missing."
             )
-        if CONVERT_TO_JPEG:
-            from config import JPEG_QUALITY
-
-            convert_tree(out_dir, quality=JPEG_QUALITY)
+        if CONVERT_TO_JPEG and not args.no_convert:
+            convert_tree(target, quality=JPEG_QUALITY)
+        code = EXIT_INCOMPLETE if incomplete or stats.get("failed_chapters") else EXIT_OK
+        return code, _result(site, out_dir, stats, None)
+    except RunError as exc:
+        cerror(str(exc))
+        return EXIT_ERROR, _result(site, out_dir, None, str(exc))
     except httpx.HTTPStatusError as exc:
-        cerror(f"HTTP error {exc.response.status_code}: {exc.request.url}")
+        message = f"HTTP error {exc.response.status_code}: {exc.request.url}"
+        cerror(message)
+        return EXIT_ERROR, _result(site, out_dir, None, message)
     except httpx.HTTPError as exc:
-        cerror(f"Network error: {exc}")
+        message = f"Network error: {exc}"
+        cerror(message)
+        return EXIT_ERROR, _result(site, out_dir, None, message)
     except Exception as exc:
-        cerror(f"Download failed: {exc}")
+        message = f"Download failed: {exc}"
+        cerror(message)
+        return EXIT_ERROR, _result(site, out_dir, None, message)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
+    if args.json:
+        set_console_stream(sys.stderr)
+    interactive = args.url is None
+
+    log_path = init_file_logging(LOGS_DIR)
+    cprint(banner(), color="cyan", panel=True)
+    cinfo(f"Logging to {log_path}")
+    if interactive:
+        supported_sites()
+
+    try:
+        code, result = run(args, interactive=interactive)
     finally:
-        pause()
+        if interactive:
+            pause()
+    if args.json:
+        print(json.dumps(result))
+    sys.exit(code)
 
 
 if __name__ == "__main__":
