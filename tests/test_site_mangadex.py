@@ -22,8 +22,9 @@ LIST_URL = f"{SITE}/title/{MANGA_ID}/hyouka"
 CHAPTER_URL = f"{SITE}/chapter/{CH1}"
 
 
-def _feed_record(chapter_id: str, chapter: str | None) -> dict:
-    return {"id": chapter_id, "type": "chapter", "attributes": {"chapter": chapter, "translatedLanguage": "en"}}
+def _feed_record(chapter_id: str, chapter: str | None, *, external: str | None = None, pages: int = 20) -> dict:
+    attributes = {"chapter": chapter, "translatedLanguage": "en", "externalUrl": external, "pages": pages}
+    return {"id": chapter_id, "type": "chapter", "attributes": attributes}
 
 
 def test_classify_and_slug():
@@ -153,3 +154,25 @@ async def test_bare_chapter_url_learns_its_number_then_downloads(tmp_path: Path,
     assert (tmp_path / "num5_Chapter 5" / "0001.jpg").exists()
     assert seen[0] == f"{API}/chapter/{CH1}"
     assert json.loads((tmp_path / "chapter_manifest.json").read_text())["chapters"] == {"num5_Chapter 5": 1}
+
+
+async def test_list_chapters_skips_external_and_empty_uploads(mock_client):
+    """An official chapter linking out to the publisher must not win the dedupe over a hosted upload."""
+    driver = MangaDexDriver()
+    ch3_external = "55555555-5555-4555-8555-555555555555"
+    ch3_hosted = "66666666-6666-4666-8666-666666666666"
+    ch4_empty = "77777777-7777-4777-8777-777777777777"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        data = [
+            _feed_record(CH1, "1"),
+            _feed_record(ch3_external, "3", external="https://mangaplus.shueisha.co.jp/viewer/1", pages=0),
+            _feed_record(ch3_hosted, "3"),
+            _feed_record(ch4_empty, "4", pages=0),
+        ]
+        return httpx.Response(200, json={"data": data, "limit": 500, "offset": 0, "total": 4})
+
+    async with mock_client(handler) as client:
+        chapters = await driver.list_chapters(client, LIST_URL)
+
+    assert chapters == [(f"{SITE}/chapter/{CH1}", 1.0), (f"{SITE}/chapter/{ch3_hosted}", 3.0)]

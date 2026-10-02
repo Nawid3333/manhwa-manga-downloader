@@ -131,6 +131,19 @@ class MangaDexDriver(SiteDriver):
         except ValueError:
             return None
 
+    @staticmethod
+    def is_hosted(record: dict[str, Any]) -> bool:
+        """Whether MangaDex itself serves the chapter's pages.
+
+        Officially licensed chapters appear in the feed as links out to the
+        publisher (MANGA Plus, ...): `externalUrl` is set and `pages` is 0, and
+        /at-home/server has nothing to give for them. Picking such a record
+        for a chapter number would leave that chapter empty even when a
+        scanlation of the same number is downloadable.
+        """
+        attributes = record.get("attributes") or {}
+        return not attributes.get("externalUrl") and attributes.get("pages") != 0
+
     async def fetch_feed(self, client: httpx.AsyncClient, manga_id: str) -> list[dict[str, Any]]:
         """Every chapter record of the manga feed, paging by the API's `total`."""
         records: list[dict[str, Any]] = []
@@ -152,13 +165,13 @@ class MangaDexDriver(SiteDriver):
                 return records
 
     async def list_chapters(self, client: httpx.AsyncClient, list_url: str) -> list[tuple[str, float]]:
-        """Return [(chapter_url, num), ...] oldest first; one upload per chapter number."""
+        """Return [(chapter_url, num), ...] oldest first; one hosted upload per chapter number."""
         manga_id = self.series_slug(list_url)
         deduped: dict[float, str] = {}
         for rec in await self.fetch_feed(client, manga_id):
             chapter_id = str(rec.get("id") or "").lower()
             num = self.chapter_number(rec)
-            if not chapter_id or num is None or num in deduped:
+            if not chapter_id or num is None or num in deduped or not self.is_hosted(rec):
                 continue
             deduped[num] = f"{SITE}/chapter/{chapter_id}"
             self._numbers[chapter_id] = num
