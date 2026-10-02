@@ -69,7 +69,8 @@ image, read the 5 characters, and write them to
 `data/.mangago_captcha_answer.txt` (plain text, nothing else). The waiting
 script picks that up, fills the field, submits, confirms the login, and
 saves the session to `MANGAGO_COOKIE` in `.env` — that's what the driver
-actually sends on every request afterward. Re-running the script first
+actually sends to mangago.me afterward (only to mangago.me itself, never to
+the image CDN the pages are fetched from). Re-running the script first
 checks whether that saved session is still valid and does nothing if so,
 so this is only needed again once it actually expires.
 
