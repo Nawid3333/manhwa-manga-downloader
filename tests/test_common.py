@@ -678,3 +678,50 @@ async def test_manifest_entry_is_dropped_when_a_chapter_goes_incomplete(tmp_path
         await downloader(client, ["https://fake.test/ch1"], tmp_path)
 
     assert not manifest_path.exists()
+
+
+# ---- bookkeeping writes and folder collisions ----------------------------------
+
+
+def test_a_failed_report_write_leaves_the_previous_report_intact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """An unreadable incomplete_chapters.json reads as "nothing incomplete" (here and in OmniScan's importer),
+    so a write cut short by a crash or a full disk must never replace the old report with half a file."""
+    previous = common.ChapterResult("ch1", "https://fake.test/ch1", ok=1, total=3, complete=False)
+    common._write_incomplete_report(tmp_path, [previous])
+    report = tmp_path / "incomplete_chapters.json"
+    before = report.read_text(encoding="utf-8")
+    real_write_text = Path.write_text
+
+    def disk_full(self: Path, data: str, *args, **kwargs) -> int:
+        real_write_text(self, data[:10], *args, **kwargs)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_text", disk_full)
+    later = common.ChapterResult("ch2", "https://fake.test/ch2", ok=0, total=2, complete=False)
+    with pytest.raises(OSError):
+        common._write_incomplete_report(tmp_path, [later])
+
+    assert report.read_text(encoding="utf-8") == before
+    assert json.loads(before)["chapters"][0]["folder"] == "ch1"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["incomplete_chapters.json"]  # no half-written leftovers
+
+
+async def test_two_urls_for_one_folder_download_once(tmp_path: Path, mock_client, jpeg_bytes: bytes):
+    """The same chapter listed under two URLs must not be fetched into one folder twice at once."""
+    fetched: list[str] = []
+
+    async def fetch(_client: httpx.AsyncClient, chapter_url: str) -> list[str]:
+        fetched.append(chapter_url)
+        return [f"{chapter_url}/0.jpg"]
+
+    downloader = common.make_downloader(
+        site_label="fake",
+        fetch_image_urls=fetch,
+        chapter_folder_name=lambda url: "num2_chapter",
+    )
+    urls = ["https://fake.test/view?num=2", "https://fake.test/view?num=2&ref=list"]
+    async with mock_client(lambda r: httpx.Response(200, content=jpeg_bytes)) as client:
+        stats = await downloader(client, urls, tmp_path)
+
+    assert fetched == ["https://fake.test/view?num=2"]
+    assert stats["complete_chapters"] == ["num2_chapter"]
