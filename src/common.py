@@ -32,6 +32,7 @@ hitting the network just to relearn a count it already knows.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import random
 import re
@@ -392,6 +393,7 @@ def make_downloader(
         # source URL still has. Checking both is what makes resume actually
         # skip already-converted images instead of redownloading them.
         jpg_sibling = dest if dest.suffix.lower() == ".jpg" else dest.with_suffix(".jpg")
+        tmp = dest.with_suffix(dest.suffix + ".part")
         last_exc: Exception | None = None
         for attempt in range(MAX_IMAGE_ATTEMPTS):
             await image_sem.acquire()
@@ -405,7 +407,6 @@ def make_downloader(
                     async with client.stream("GET", url, timeout=120) as resp:
                         resp.raise_for_status()
                         dest.parent.mkdir(parents=True, exist_ok=True)
-                        tmp = dest.with_suffix(dest.suffix + ".part")
                         with tmp.open("wb") as out:
                             async for chunk in resp.aiter_bytes(64 * 1024):
                                 out.write(chunk)
@@ -413,7 +414,6 @@ def make_downloader(
                         tmp.replace(dest)
                         ok = True
                     else:
-                        tmp.unlink(missing_ok=True)
                         last_exc = ValueError("downloaded file failed its integrity check")
                         delay = _jittered_delay(attempt)
             except httpx.HTTPStatusError as exc:
@@ -424,6 +424,12 @@ def make_downloader(
                 last_exc = exc
                 delay = _jittered_delay(attempt)
             finally:
+                if not ok:
+                    # A stream dropped mid-body leaves a half-written .part behind;
+                    # the next attempt overwrites it, but the last one must not
+                    # leave it in the chapter folder.
+                    with contextlib.suppress(OSError):
+                        tmp.unlink(missing_ok=True)
                 elapsed_ms = (time.perf_counter() - started) * 1000
                 log_debug(
                     f"{url} attempt={attempt + 1}/{MAX_IMAGE_ATTEMPTS} ok={ok} "
@@ -503,6 +509,9 @@ def make_downloader(
                     )
                     await asyncio.sleep(CHAPTER_RETRY_PAUSE + random.uniform(0, 2.0))
                 results = await asyncio.gather(*(attempt_one(i) for i in pending), return_exceptions=True)
+                for idx, result in zip(pending, results, strict=True):
+                    if isinstance(result, BaseException):  # download_image handles the expected ones itself
+                        log_debug(f"{folder_name} image {idx}: unexpected {type(result).__name__}: {result}")
                 still_pending = [idx for idx, result in zip(pending, results, strict=True) if result is not True]
                 ok_count += len(pending) - len(still_pending)
                 pending = still_pending
