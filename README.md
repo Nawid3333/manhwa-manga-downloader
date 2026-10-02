@@ -148,7 +148,8 @@ The object is a versioned contract (OmniScan's `omniscan import --from-url`
 reads it):
 
 ```json
-{"schema": 1, "site": "mangadex", "out_dir": "downloads/mangadex/<id>",
+{"schema": 1, "site": "mangadex", "series": "<id>",
+ "out_dir": "downloads/mangadex/<id>",
  "chapters": 2, "images": 41, "failed_chapters": 0,
  "complete_chapters": ["num1_Chapter 1", "num2_Chapter 2"],
  "incomplete_chapters": ["num3_Chapter 3"]}
@@ -159,6 +160,11 @@ reads it):
   should refuse a `schema` it does not know rather than guess.
 - `site`, `out_dir` -- the driver key and the folder the run wrote to
   (`null` when the run failed before it got that far).
+- `series` -- the series folder name the driver gives this URL (the
+  `<series>` of `downloads/<site>/<series>`, even when `--out` put the files
+  elsewhere); `null` when the URL does not name its series. Some sites give
+  an id here rather than a title (wfwf504's numeric toon id, MangaDex's
+  UUID).
 - `chapters`, `images` -- chapters that finished and images now on disk.
 - `failed_chapters` -- chapters that failed outright (an unexpected error
   while reading the chapter page).
