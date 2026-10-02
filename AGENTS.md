@@ -77,9 +77,9 @@ non-JPEG image to JPEG after each run.
 
 ## Non-negotiables
 
-- Windows 11 is the primary environment; code must also run on Linux.
-  CI (`ci.yml`) runs lint, format, type check and tests on `windows-latest`
-  only, so a Linux-only breakage is yours to catch locally.
+- Windows 11 is the primary environment; code must also run on Linux
+  (CI runs lint, format, type check and tests on `windows-latest` and
+  `ubuntu-latest`, on Python 3.11 and 3.13, and builds the package).
 - Python floor is 3.11 (`requires-python`); CI tests the floor version, so
   never use a newer-only API without raising the floor deliberately.
 - The target image format is always JPEG (quality 90). Non-JPEG downloads
@@ -126,4 +126,6 @@ non-JPEG image to JPEG after each run.
 4. Export `driver = MyDriver()` at module level — discovery picks it up.
 5. Update the README sites table.
 6. Tests stay hermetic (`httpx.MockTransport` via the `mock_client`
-   fixture); never hit a live site from the suite.
+   fixture); never hit a live site from the suite. The one live check is
+   `.github/workflows/live-smoke.yml`, a weekly download of one MangaDex
+   chapter that opens an issue when it breaks; it is not part of `pytest`.

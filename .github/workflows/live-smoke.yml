@@ -1,0 +1,117 @@
+# Weekly end-to-end check against MangaDex, the one supported site with a
+# stable public API and no bot wall (the others sit behind Cloudflare and
+# would only flap from a runner). The test suite is hermetic by rule
+# (tests/conftest.py) and this is deliberately not part of it: a scraper's
+# real failure mode is the site changing under it, and nothing else here
+# would notice until a user does. The run asks the API for a recent, hosted
+# English chapter, downloads it through the normal CLI, and checks the
+# --json result. A failure opens one issue, assigned to the owner; the next
+# green run closes it. Run by hand from the Actions tab to check right now.
+name: Live smoke test
+
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-smoke
+  cancel-in-progress: false
+
+jobs:
+  mangadex:
+    name: Download one MangaDex chapter
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/install
+
+      - name: Pick a recent hosted chapter
+        id: pick
+        # The newest chapters the API lists, skipping any that only link out
+        # to a publisher (no pages hosted by MangaDex). Goes through the
+        # driver's own User-Agent, as the API's terms ask.
+        run: |
+          python - <<'EOF' >> "$GITHUB_OUTPUT"
+          import httpx
+
+          from src.sites.mangadex import API, user_agent
+
+          params = [
+              ("limit", 20),
+              ("translatedLanguage[]", "en"),
+              ("contentRating[]", "safe"),
+              ("includeExternalUrl", 0),
+              ("order[readableAt]", "desc"),
+          ]
+          resp = httpx.get(f"{API}/chapter", params=params, headers={"User-Agent": user_agent()}, timeout=30)
+          resp.raise_for_status()
+          for record in resp.json()["data"]:
+              attributes = record.get("attributes") or {}
+              if attributes.get("pages") and not attributes.get("externalUrl"):
+                  print(f"chapter={record['id']}")
+                  break
+          else:
+              raise SystemExit("the latest chapters contain nothing MangaDex hosts itself")
+          EOF
+
+      - name: Download it through the CLI
+        env:
+          CHAPTER: ${{ steps.pick.outputs.chapter }}
+        run: |
+          python main.py "https://mangadex.org/chapter/$CHAPTER" --yes --json --no-convert \
+            --out "$RUNNER_TEMP/smoke" > result.json
+          cat result.json
+          python - <<'EOF'
+          import json
+
+          result = json.load(open("result.json", encoding="utf-8"))
+          assert result["schema"] == 1, result
+          assert result["chapters"] == 1 and result["images"] > 0, result
+          assert not result["incomplete_chapters"] and "error" not in result, result
+          EOF
+
+      - name: Open or close the issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ job.status }}
+          OWNER: ${{ github.repository_owner }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Live smoke test fails on MangaDex"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" | head -1)
+          if [ "$RESULT" = success ]; then
+            if [ -n "$number" ]; then
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Green again: $RUN_URL"
+            fi
+            exit 0
+          fi
+          if [ "$RESULT" != failure ]; then
+            echo "Run ended with $RESULT; nothing to report."
+            exit 0
+          fi
+          if [ -n "$number" ]; then
+            echo "Still failing; already reported in #$number."
+            exit 0
+          fi
+          {
+            printf '@%s The weekly download of one MangaDex chapter failed: %s\n\n' "$OWNER" "$RUN_URL"
+            printf 'The run log shows which step broke: picking a chapter (the API answered differently), '
+            printf 'the download itself (src/sites/mangadex.py no longer matches the API or the MangaDex@Home nodes), '
+            printf 'or the result check (the --json contract changed). A MangaDex outage looks the same; '
+            printf 're-run the workflow by hand before changing code.\n\n'
+            printf 'This issue closes on its own once a run passes (the check runs weekly).\n'
+          } > "$RUNNER_TEMP/body.md"
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --assignee "$OWNER" --body-file "$RUNNER_TEMP/body.md"

@@ -12,7 +12,10 @@ updates:
       - "dependencies"
 
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/"
+      # The composite action ci.yml, release.yml and live-smoke.yml share.
+      - "/.github/actions/install"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
