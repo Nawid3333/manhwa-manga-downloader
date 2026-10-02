@@ -9,8 +9,14 @@ rather than part of this hermetic suite.
 
 from __future__ import annotations
 
-import httpx
+import subprocess
+import sys
+from pathlib import Path
 
+import httpx
+import pytest
+
+from src.sites import mangago
 from src.sites.mangago import BASE, MangagoDriver, _extract_label, _parse_cookie_header, _strip_label
 
 driver = MangagoDriver()
@@ -79,3 +85,24 @@ async def test_list_chapters_dedupes_labels_ids_and_sorts_oldest_first(mock_clie
     assert [num for _, num in chapters] == [4.0, 156.0, 157.0]
     by_num = {num: url for url, num in chapters}
     assert by_num[157.0] == f"{CHAPTER_URL}#157"
+
+
+def test_client_without_playwright_says_how_to_install_it(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(mangago, "find_spec", lambda name: None)
+    monkeypatch.setenv("MANGAGO_COOKIE", "PHPSESSID=x")
+    with pytest.raises(RuntimeError, match=r"\.\[mangago\]"):
+        driver.client()
+
+
+def test_registry_keeps_mangago_and_a_clean_stdout_without_playwright():
+    """Without the `mangago` extra the driver still registers, and importing the registry prints nothing on stdout."""
+    root = Path(__file__).resolve().parent.parent
+    code = (
+        "import sys; sys.modules['playwright'] = None\n"
+        "import config\n"
+        "sys.stderr.write(','.join(sorted(config.SUPPORTED_SITES)))\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == ""
+    assert "mangago" in proc.stderr.split(",")

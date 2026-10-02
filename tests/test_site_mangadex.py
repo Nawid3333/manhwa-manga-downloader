@@ -150,7 +150,13 @@ async def test_bare_chapter_url_learns_its_number_then_downloads(tmp_path: Path,
     driver = MockedDriver()
     stats = await driver.download_series_url(CHAPTER_URL, tmp_path)
 
-    assert stats == {"chapters": 1, "images": 1, "failed_chapters": 0, "incomplete_chapters": []}
+    assert stats == {
+        "chapters": 1,
+        "images": 1,
+        "failed_chapters": 0,
+        "complete_chapters": ["num5_Chapter 5"],
+        "incomplete_chapters": [],
+    }
     assert (tmp_path / "num5_Chapter 5" / "0001.jpg").exists()
     assert seen[0] == f"{API}/chapter/{CH1}"
     assert json.loads((tmp_path / "chapter_manifest.json").read_text())["chapters"] == {"num5_Chapter 5": 1}

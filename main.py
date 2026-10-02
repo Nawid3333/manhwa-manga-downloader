@@ -9,7 +9,10 @@ double-clicked window stays readable) and a scriptable one (URL on the
 command line, `--chapters`, `--out`, `--yes`, `--json`). In `--json` mode
 every console message is routed to stderr so stdout carries exactly one
 JSON object for the calling script, and the exit code says how the run
-ended: 0 complete, 2 some chapters stayed incomplete, 1 error.
+ended: 0 complete, 2 some chapters stayed incomplete, 1 error (a usage
+error too, so 2 never means anything but "incomplete"), 130 aborted. The
+object carries `"schema": RESULT_SCHEMA`; a caller refuses a schema it does
+not know instead of misreading it (see README "Non-interactive").
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import urlparse
 
 import httpx
@@ -45,6 +48,11 @@ from term import (
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_INCOMPLETE = 2
+EXIT_ABORTED = 130
+
+# Version of the `--json` result object. Bump it when a field changes meaning
+# or goes away; adding a field does not need a bump.
+RESULT_SCHEMA = 1
 
 
 def banner() -> str:
@@ -101,9 +109,17 @@ async def _count_chapters(driver, url: str):
     return await driver.count_chapters(url)
 
 
+class _Parser(argparse.ArgumentParser):
+    """argparse exits with 2 on a usage error, which is EXIT_INCOMPLETE here; exit with EXIT_ERROR instead."""
+
+    def error(self, message: str) -> NoReturn:
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_ERROR, f"{self.prog}: error: {message}\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Command-line interface; with no URL the interactive flow runs instead."""
-    parser = argparse.ArgumentParser(prog="mangadl", description=banner())
+    parser = _Parser(prog="mangadl", description=banner())
     parser.add_argument("url", nargs="?", help="series list URL or chapter URL (omit for the interactive prompt)")
     parser.add_argument(
         "--chapters",
@@ -156,11 +172,13 @@ def _select_chapters(args: argparse.Namespace, links: list[tuple[str, float]], i
 def _result(site: Site | None, out_dir: Path | None, stats: dict[str, Any] | None, error: str | None) -> dict[str, Any]:
     stats = stats or {}
     result: dict[str, Any] = {
+        "schema": RESULT_SCHEMA,
         "site": site.key if site else None,
         "out_dir": str(out_dir) if out_dir else None,
         "chapters": int(stats.get("chapters", 0)),
         "images": int(stats.get("images", 0)),
         "failed_chapters": int(stats.get("failed_chapters", 0)),
+        "complete_chapters": list(stats.get("complete_chapters") or []),
         "incomplete_chapters": list(stats.get("incomplete_chapters") or []),
     }
     if error:
@@ -242,6 +260,10 @@ def run(args: argparse.Namespace, *, interactive: bool) -> tuple[int, dict[str, 
         message = f"Download failed: {exc}"
         cerror(message)
         return EXIT_ERROR, _result(site, out_dir, None, message)
+    except KeyboardInterrupt:
+        message = "Aborted by user."
+        cerror(message)
+        return EXIT_ABORTED, _result(site, out_dir, None, message)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -250,9 +272,13 @@ def main(argv: list[str] | None = None) -> None:
         set_console_stream(sys.stderr)
     interactive = args.url is None
 
-    log_path = init_file_logging(LOGS_DIR)
     cprint(banner(), color="cyan", panel=True)
-    cinfo(f"Logging to {log_path}")
+    try:
+        log_path = init_file_logging(LOGS_DIR)
+    except OSError as exc:  # e.g. an installed copy whose logs/ is not writable: run without a log file
+        cwarning(f"No log file for this run: {exc}")
+    else:
+        cinfo(f"Logging to {log_path}")
     if interactive:
         supported_sites()
 

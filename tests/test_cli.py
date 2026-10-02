@@ -153,11 +153,13 @@ def test_json_run_prints_one_object_on_stdout_and_messages_on_stderr(cli, tmp_pa
     assert out.out.count("\n") == 1
     result = json.loads(out.out)
     assert result == {
+        "schema": 1,
         "site": "fake",
         "out_dir": str(out_dir),
         "chapters": 3,
         "images": 3,
         "failed_chapters": 0,
+        "complete_chapters": ["ch1", "ch2", "ch3"],
         "incomplete_chapters": [],
     }
     assert "Done!" in out.err
@@ -211,7 +213,38 @@ def test_incomplete_chapters_exit_with_2(cli, tmp_path: Path, capsys):
     assert code == 2
     result = json.loads(out.out)
     assert result["incomplete_chapters"] == ["ch4"]
+    assert result["complete_chapters"] == []
     assert result["images"] == 0
+
+
+def test_usage_error_exits_with_1_not_the_incomplete_code(capsys):
+    """argparse's own exit code for a bad flag is 2, which a caller would read as "some chapters incomplete"."""
+    with pytest.raises(SystemExit) as exc:
+        main.main(["https://fake.test/series", "--chapterz", "1"])
+    assert exc.value.code == main.EXIT_ERROR
+    out = capsys.readouterr()
+    assert out.out == "" and "unrecognized arguments" in out.err
+
+
+def test_keyboard_interrupt_still_prints_the_json_result(cli, monkeypatch: pytest.MonkeyPatch, capsys):
+    async def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(FakeDriver, "download_series_url", interrupted)
+    code, out = cli(["https://fake.test/chapter/1", "-y", "--json"], capsys=capsys)
+    assert code == main.EXIT_ABORTED
+    result = json.loads(out.out)
+    assert result["site"] == "fake" and result["error"] == "Aborted by user."
+
+
+def test_unwritable_log_folder_does_not_stop_the_run(cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys):
+    def refuse(_logs_dir: Path) -> Path:
+        raise PermissionError("logs/ is read-only")
+
+    monkeypatch.setattr(main, "init_file_logging", refuse)
+    code, out = cli(["https://fake.test/chapter/1", "--out", str(tmp_path / "o"), "-y", "--json"], capsys=capsys)
+    assert code == 0 and json.loads(out.out)["chapters"] == 1
+    assert "No log file for this run" in out.err
 
 
 def test_unresolvable_site_exits_with_1(cli, capsys):

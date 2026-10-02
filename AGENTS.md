@@ -18,8 +18,11 @@ non-JPEG image to JPEG after each run.
   (`main.py URL [--chapters RANGE] [--out DIR] [--yes] [--json]
   [--no-convert]`). `--json` routes every console message to stderr
   (`term.set_console_stream`) so stdout carries exactly one result object;
-  exit codes are 0 / 2 (chapters stayed incomplete) / 1 (error). Chapter
-  selections are parsed by the pure `term.parse_range()` for both doors.
+  exit codes are 0 / 2 (chapters stayed incomplete) / 1 (error, including
+  usage errors) / 130 (interrupted). Nothing may write to stdout before
+  that object, including at import time (`config._registry_warning` uses
+  stderr). Chapter selections are parsed by the pure `term.parse_range()`
+  for both doors.
 - `config.py` — the site registry and URL resolution. Drivers
   **self-register**: any module in `src/sites/` that exports a module-level
   `driver` (a `SiteDriver` instance) is discovered automatically. Dropping a
@@ -49,7 +52,10 @@ non-JPEG image to JPEG after each run.
 - `src/sites/wfwf.py` — wfwf504.com driver (list pages, pagination).
 - `src/sites/mangago.py` — mangago.me driver (logged-in session required;
   headless Playwright reads chapter image URLs the site encrypts
-  client-side, see README.md "Why mangago needs an account").
+  client-side, see README.md "Why mangago needs an account"). Playwright
+  (the optional `mangago` extra) is imported only when a browser is
+  needed, so the driver registers without it and `client()` says how to
+  install it.
 - `src/sites/mangadex.py` — mangadex.org driver over the official API
   (feed paging by `total`, `MANGADEX_LANGS`, MangaDex@Home image nodes,
   descriptive User-Agent, 429 backoff). Chapter numbers are remembered per
@@ -88,9 +94,11 @@ non-JPEG image to JPEG after each run.
   (`src/omniscan/importer/downloader.py` there): chapter folders named
   `num<N>_<title>` (`num0_`/`numunknown_` only when the number is unknown),
   `.part` files while an image is in flight, and `chapter_manifest.json` /
-  `incomplete_chapters.json` in the series folder. Changing any of these
-  needs the matching change in OmniScan (see README "Translating with
-  OmniScan").
+  `incomplete_chapters.json` in the series folder. The `--json` result
+  object is part of that contract too (README "The `--json` result"):
+  adding a field is fine, but changing or removing one means bumping
+  `main.RESULT_SCHEMA`. Changing any of these needs the matching change in
+  OmniScan (see README "Translating with OmniScan").
 - Never commit downloads, logs, scratch probes (`_*.py`), or secrets.
   `.gitignore` covers `downloads/`, `logs/`, `data/`, `series_*/`.
 - Definition of done for a change: `ruff check .`, `ruff format --check .`,
