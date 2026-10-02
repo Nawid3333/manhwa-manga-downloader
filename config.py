@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,6 +57,16 @@ class Site:
     driver: SiteDriver = field(compare=False)
 
 
+def _registry_warning(message: str) -> None:
+    """Report a registry problem on stderr.
+
+    Discovery runs at import time, before main() can route the console for
+    `--json`, so anything printed to stdout here would land in front of the
+    JSON object a calling script parses.
+    """
+    print(f"[registry] {message}", file=sys.stderr)
+
+
 def _discover_drivers() -> dict[str, Site]:
     """Import every src/sites/*.py module and collect exported `driver`s."""
     import src.sites as sites_pkg
@@ -68,13 +79,13 @@ def _discover_drivers() -> dict[str, Site]:
         try:
             mod = importlib.import_module(module_name)
         except Exception as exc:  # a broken driver must not kill the app
-            print(f"[registry] failed to load site module {module_name}: {exc}")
+            _registry_warning(f"failed to load site module {module_name}: {exc}")
             continue
         driver = getattr(mod, "driver", None)
         if not isinstance(driver, SiteDriver) or not driver.key:
             continue
         if driver.key in drivers:
-            print(f"[registry] duplicate site key {driver.key!r} in {module_name}")
+            _registry_warning(f"duplicate site key {driver.key!r} in {module_name}")
             continue
         drivers[driver.key] = Site(
             key=driver.key,

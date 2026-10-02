@@ -23,6 +23,11 @@ image bytes still go through the normal httpx-based download engine.
 
 The chapter list itself is plain HTML (no encryption), so list_chapters is
 ordinary httpx + lxml, same shape as the other drivers.
+
+Playwright is the optional `mangago` extra, so it is imported only when a
+browser is actually needed. Without it the driver still registers -- a
+mangago URL keeps resolving here instead of falling through to the generic
+scraper -- and client() says how to install it.
 """
 
 from __future__ import annotations
@@ -30,18 +35,20 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from importlib.util import find_spec
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import httpx
-from playwright._impl._api_structures import SetCookieParam
-from playwright.async_api import Browser, BrowserContext, async_playwright
-from playwright.async_api import Error as PlaywrightError
 
 from src.base import SiteDriver
 from src.htmlutil import all_of, attr, has_class, parse_html, stripped_text
 from term import cwarning
+
+if TYPE_CHECKING:
+    from playwright._impl._api_structures import SetCookieParam
+    from playwright.async_api import Browser, BrowserContext, Playwright
 
 BASE = "https://www.mangago.me"
 
@@ -91,7 +98,7 @@ class MangagoDriver(SiteDriver):
     referer = BASE + "/"
 
     def __init__(self) -> None:
-        self._pw = None
+        self._pw: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
         self._browser_lock = asyncio.Lock()
@@ -105,6 +112,12 @@ class MangagoDriver(SiteDriver):
         return {"Cookie": cookie} if cookie else None
 
     def client(self, **kwargs) -> httpx.AsyncClient:
+        if find_spec("playwright") is None:
+            raise RuntimeError(
+                "the mangago driver needs a browser: install it with "
+                '`pip install -e ".[mangago]"`, then `playwright install firefox` '
+                '(see README.md "Why mangago needs an account").'
+            )
         if not os.environ.get("MANGAGO_COOKIE"):
             raise RuntimeError(
                 "MANGAGO_COOKIE is not set -- run `python -m tests.mangago_login` first "
@@ -193,6 +206,8 @@ class MangagoDriver(SiteDriver):
     async def _ensure_context(self) -> BrowserContext:
         async with self._browser_lock:
             if self._context is None:
+                from playwright.async_api import async_playwright
+
                 cookie = os.environ["MANGAGO_COOKIE"]  # client() already required this
                 self._pw = await async_playwright().start()
                 self._browser = await self._pw.firefox.launch(headless=True)
@@ -211,6 +226,8 @@ class MangagoDriver(SiteDriver):
             self._pw = None
 
     async def image_urls(self, client: httpx.AsyncClient, chapter_url: str) -> list[str]:
+        from playwright.async_api import Error as PlaywrightError
+
         context = await self._ensure_context()
         page = await context.new_page()
         try:

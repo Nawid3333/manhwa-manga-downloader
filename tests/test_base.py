@@ -110,14 +110,26 @@ def test_select_chapters_filters_by_integer_chapter_number():
 async def test_download_series_url_downloads_single_chapter_directly(tmp_path: Path, jpeg_bytes: bytes):
     driver = FakeDriver(_ok_handler(jpeg_bytes))
     stats = await driver.download_series_url("https://fake.test/chapter/9", tmp_path)
-    assert stats == {"chapters": 1, "images": 1, "failed_chapters": 0, "incomplete_chapters": []}
+    assert stats == {
+        "chapters": 1,
+        "images": 1,
+        "failed_chapters": 0,
+        "complete_chapters": ["9"],
+        "incomplete_chapters": [],
+    }
     assert (tmp_path / "9" / "0001.jpg").exists()
 
 
 async def test_download_series_url_filters_list_by_requested_chapters(tmp_path: Path, jpeg_bytes: bytes):
     driver = FakeDriver(_ok_handler(jpeg_bytes))
     stats = await driver.download_series_url("https://fake.test/list", tmp_path, chapters=[2])
-    assert stats == {"chapters": 1, "images": 1, "failed_chapters": 0, "incomplete_chapters": []}
+    assert stats == {
+        "chapters": 1,
+        "images": 1,
+        "failed_chapters": 0,
+        "complete_chapters": ["2"],
+        "incomplete_chapters": [],
+    }
     assert (tmp_path / "2" / "0001.jpg").exists()
     assert not (tmp_path / "1").exists()
 

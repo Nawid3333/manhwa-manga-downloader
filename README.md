@@ -128,20 +128,47 @@ python main.py <URL> [--chapters RANGE] [--out DIR] [--yes] [--json] [--no-conve
 - `--out DIR` -- output directory instead of `downloads/<site>/<series>`.
 - `--yes` / `-y` -- skip the "Start download?" confirmation.
 - `--json` -- print exactly one JSON object to stdout when the run ends and
-  send every other message to stderr, so a calling script can parse stdout:
-  `{"site": "...", "out_dir": "...", "chapters": n, "images": n,
-  "failed_chapters": n, "incomplete_chapters": [...]}` (plus `"error"` when
-  the run failed).
+  send every other message to stderr, so a calling script can parse stdout
+  (see "The `--json` result" below).
 - `--no-convert` -- keep the downloaded images as they are (skip the JPEG
   conversion pass).
 
 Exit code: `0` when every requested chapter completed, `2` when some
 chapters stayed incomplete after all retries (see Reliability below), `1`
-on an error (bad URL, unsupported site, empty listing, network failure).
+on an error (bad URL, unsupported site, empty listing, network failure, or
+a command-line usage error), `130` when the run was interrupted (Ctrl+C).
 
 ```pwsh
 python main.py https://mangadex.org/title/<uuid>/some-title --chapters 1-5 --yes --json
 ```
+
+#### The `--json` result
+
+The object is a versioned contract (OmniScan's `omniscan import --from-url`
+reads it):
+
+```json
+{"schema": 1, "site": "mangadex", "out_dir": "downloads/mangadex/<id>",
+ "chapters": 2, "images": 41, "failed_chapters": 0,
+ "complete_chapters": ["num1_Chapter 1", "num2_Chapter 2"],
+ "incomplete_chapters": ["num3_Chapter 3"]}
+```
+
+- `schema` -- the version of this object. It goes up only when a field
+  changes meaning or is removed; a new field does not change it. A caller
+  should refuse a `schema` it does not know rather than guess.
+- `site`, `out_dir` -- the driver key and the folder the run wrote to
+  (`null` when the run failed before it got that far).
+- `chapters`, `images` -- chapters that finished and images now on disk.
+- `failed_chapters` -- chapters that failed outright (an unexpected error
+  while reading the chapter page).
+- `complete_chapters`, `incomplete_chapters` -- the chapter folder names
+  (inside `out_dir`) that finished, and those still missing pages.
+- `error` -- present only when the run failed; a message for a person.
+
+Only stdout carries the object: nothing is printed there before it, not
+even a site module that fails to load at startup (that warning goes to
+stderr).
 
 Every run also writes a timestamped log file to `logs/` (e.g.
 `logs/run_20260922_153000.log`) — the same messages shown on screen, plus

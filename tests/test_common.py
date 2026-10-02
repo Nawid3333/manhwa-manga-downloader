@@ -160,7 +160,13 @@ async def test_download_series_writes_images(tmp_path: Path, mock_client, jpeg_b
     async with mock_client(lambda r: httpx.Response(200, content=jpeg_bytes)) as client:
         stats = await downloader(client, ["https://fake.test/ch1"], tmp_path)
 
-    assert stats == {"chapters": 1, "images": 2, "failed_chapters": 0, "incomplete_chapters": []}
+    assert stats == {
+        "chapters": 1,
+        "images": 2,
+        "failed_chapters": 0,
+        "complete_chapters": ["ch1"],
+        "incomplete_chapters": [],
+    }
     assert (tmp_path / "ch1" / "0001.jpg").exists()
     assert (tmp_path / "ch1" / "0002.jpg").exists()
     assert not (tmp_path / "ch1" / "incomplete_chapters.json").exists()
@@ -215,7 +221,13 @@ async def test_download_series_resume_recognizes_an_already_converted_jpg(
     async with mock_client(handler) as client:
         stats = await downloader(client, ["https://fake.test/ch1"], tmp_path)
 
-    assert stats == {"chapters": 1, "images": 1, "failed_chapters": 0, "incomplete_chapters": []}
+    assert stats == {
+        "chapters": 1,
+        "images": 1,
+        "failed_chapters": 0,
+        "complete_chapters": ["ch1"],
+        "incomplete_chapters": [],
+    }
 
 
 async def test_download_series_sanitizes_a_malicious_folder_name(tmp_path: Path, mock_client, jpeg_bytes: bytes):
@@ -281,7 +293,13 @@ async def test_download_series_retries_corrupt_body_instead_of_accepting_it(
         stats = await downloader(client, ["https://fake.test/ch1"], tmp_path)
 
     assert attempts["n"] == 2
-    assert stats == {"chapters": 1, "images": 1, "failed_chapters": 0, "incomplete_chapters": []}
+    assert stats == {
+        "chapters": 1,
+        "images": 1,
+        "failed_chapters": 0,
+        "complete_chapters": ["ch1"],
+        "incomplete_chapters": [],
+    }
     dest = tmp_path / "ch1" / "0001.jpg"
     assert dest.exists()
     assert await common._plausible_download(dest) is True
@@ -331,7 +349,13 @@ async def test_download_chapter_recovers_in_a_later_round(tmp_path: Path, mock_c
     async with mock_client(handler) as client:
         stats = await downloader(client, ["https://fake.test/ch1"], tmp_path)
 
-    assert stats == {"chapters": 1, "images": 1, "failed_chapters": 0, "incomplete_chapters": []}
+    assert stats == {
+        "chapters": 1,
+        "images": 1,
+        "failed_chapters": 0,
+        "complete_chapters": ["ch1"],
+        "incomplete_chapters": [],
+    }
     assert attempts["n"] == common.MAX_IMAGE_ATTEMPTS + 1
 
 
@@ -349,7 +373,13 @@ async def test_download_chapter_reports_incomplete_after_exhausting_all_rounds(
     async with mock_client(lambda r: httpx.Response(500)) as client:
         stats = await downloader(client, ["https://fake.test/ch1"], tmp_path)
 
-    assert stats == {"chapters": 0, "images": 0, "failed_chapters": 0, "incomplete_chapters": ["ch1"]}
+    assert stats == {
+        "chapters": 0,
+        "images": 0,
+        "failed_chapters": 0,
+        "complete_chapters": [],
+        "incomplete_chapters": ["ch1"],
+    }
     assert any("INCOMPLETE" in e and "ch1" in e for e in errors)
 
 
@@ -397,7 +427,13 @@ async def test_download_chapter_gives_up_on_listing_after_all_attempts(
         stats = await downloader(client, ["https://fake.test/ch1"], tmp_path)
 
     assert calls["n"] == common.LISTING_RETRY_ATTEMPTS
-    assert stats == {"chapters": 0, "images": 0, "failed_chapters": 0, "incomplete_chapters": ["ch1"]}
+    assert stats == {
+        "chapters": 0,
+        "images": 0,
+        "failed_chapters": 0,
+        "complete_chapters": [],
+        "incomplete_chapters": ["ch1"],
+    }
     assert any("failed to read ch1" in w for w in warnings)
 
 
@@ -418,7 +454,13 @@ async def test_download_series_warns_on_persistently_empty_chapter(
     async with mock_client(lambda r: httpx.Response(200)) as client:
         stats = await downloader(client, ["https://fake.test/empty"], tmp_path)
 
-    assert stats == {"chapters": 0, "images": 0, "failed_chapters": 0, "incomplete_chapters": ["empty"]}
+    assert stats == {
+        "chapters": 0,
+        "images": 0,
+        "failed_chapters": 0,
+        "complete_chapters": [],
+        "incomplete_chapters": ["empty"],
+    }
     assert not (tmp_path / "empty").exists()
     assert any("no images" in w for w in warnings)
 
@@ -440,7 +482,13 @@ async def test_download_series_counts_unexpected_chapter_error(
     async with mock_client(lambda r: httpx.Response(200)) as client:
         stats = await downloader(client, ["https://fake.test/broken"], tmp_path)
 
-    assert stats == {"chapters": 0, "images": 0, "failed_chapters": 1, "incomplete_chapters": []}
+    assert stats == {
+        "chapters": 0,
+        "images": 0,
+        "failed_chapters": 1,
+        "complete_chapters": [],
+        "incomplete_chapters": [],
+    }
     assert errors
 
 
@@ -534,7 +582,13 @@ async def test_rerun_skips_listing_fetch_for_a_manifest_verified_chapter(
     async with mock_client(lambda r: httpx.Response(200, content=jpeg_bytes)) as client:
         stats1 = await downloader(client, ["https://fake.test/ch1"], tmp_path)
 
-    assert stats1 == {"chapters": 1, "images": 2, "failed_chapters": 0, "incomplete_chapters": []}
+    assert stats1 == {
+        "chapters": 1,
+        "images": 2,
+        "failed_chapters": 0,
+        "complete_chapters": ["ch1"],
+        "incomplete_chapters": [],
+    }
     assert calls["n"] == 1
     manifest_path = tmp_path / "chapter_manifest.json"
     assert manifest_path.exists()
@@ -543,7 +597,13 @@ async def test_rerun_skips_listing_fetch_for_a_manifest_verified_chapter(
     async with mock_client(lambda r: httpx.Response(200, content=jpeg_bytes)) as client:
         stats2 = await downloader(client, ["https://fake.test/ch1"], tmp_path)
 
-    assert stats2 == {"chapters": 1, "images": 2, "failed_chapters": 0, "incomplete_chapters": []}
+    assert stats2 == {
+        "chapters": 1,
+        "images": 2,
+        "failed_chapters": 0,
+        "complete_chapters": ["ch1"],
+        "incomplete_chapters": [],
+    }
     assert calls["n"] == 1  # the listing page was not fetched a second time
 
 
@@ -571,7 +631,13 @@ async def test_manifest_falls_back_to_a_real_check_if_a_file_goes_missing(
         stats = await downloader(client, ["https://fake.test/ch1"], tmp_path)
 
     assert calls["n"] == 2  # manifest didn't match on disk, so it re-fetched the listing
-    assert stats == {"chapters": 1, "images": 2, "failed_chapters": 0, "incomplete_chapters": []}
+    assert stats == {
+        "chapters": 1,
+        "images": 2,
+        "failed_chapters": 0,
+        "complete_chapters": ["ch1"],
+        "incomplete_chapters": [],
+    }
     assert (tmp_path / "ch1" / "0002.jpg").exists()
 
 

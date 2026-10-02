@@ -561,6 +561,7 @@ def make_downloader(
             "chapters": complete_chapters,
             "images": total_ok_images,
             "failed_chapters": failures,
+            "complete_chapters": [r.folder for r in results if r.complete],
             "incomplete_chapters": [r.folder for r in incomplete],
         }
 
