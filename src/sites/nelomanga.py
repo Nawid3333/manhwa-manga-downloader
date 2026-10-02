@@ -76,8 +76,8 @@ class NelomangaDriver(SiteDriver):
     # ---- site specifics ----------------------------------------------------
 
     @staticmethod
-    def chapter_label(url: str) -> str | None:
-        """Raw CDN label from the URL slug: chapter-194-1 -> '194.1'."""
+    def cdn_label(url: str) -> str | None:
+        """Raw CDN path label from the URL slug: chapter-194-1 -> '194.1' (trailing zeros kept)."""
         m = _CHAPTER_RE.match(urlparse(url).path)
         if not m:
             return None
@@ -85,7 +85,7 @@ class NelomangaDriver(SiteDriver):
 
     @classmethod
     def chapter_num(cls, url: str) -> float | None:
-        label = cls.chapter_label(url)
+        label = cls.cdn_label(url)
         if label is None:
             return None
         try:
@@ -94,7 +94,7 @@ class NelomangaDriver(SiteDriver):
             return None
 
     def folder_name(self, chapter_url: str) -> str:
-        label = self.chapter_label(chapter_url)
+        label = self.cdn_label(chapter_url)
         if label is None:
             tail = urlparse(chapter_url).path.rsplit("/", 1)[-1]
             return f"num0_{self.safe(tail)}"
@@ -166,7 +166,7 @@ class NelomangaDriver(SiteDriver):
 
     async def image_urls(self, client: httpx.AsyncClient, chapter_url: str) -> list[str]:
         """Probe the CDN pattern for one chapter and return existing image urls."""
-        label = self.chapter_label(chapter_url)
+        label = self.cdn_label(chapter_url)
         slug = self.series_slug(chapter_url)
         if label is None:
             return []

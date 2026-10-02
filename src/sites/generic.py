@@ -160,35 +160,20 @@ class GenericDriver(SiteDriver):
 
     # ---- site specifics ----------------------------------------------------
 
-    @staticmethod
-    def chapter_label(num: float) -> str:
-        if num.is_integer():
-            return str(int(num))
-        return f"{num:.3f}".rstrip("0").rstrip(".")
-
     def folder_name(self, chapter_url: str) -> str:
-        num = self.chapter_number_from_url(chapter_url)
-        if num is None:
-            return f"num0_{self.safe('Chapter unknown')}"
-        return f"num{num:g}_{self.safe(f'Chapter {self.chapter_label(num)}')}"
+        return self.chapter_folder(self.chapter_number_from_url(chapter_url))
 
     async def list_chapters(self, client: httpx.AsyncClient, list_url: str) -> list[tuple[str, float]]:
         """Chapter links found on the series page, oldest first."""
-        html = await self._page_html(client, list_url)
+        html = await self.fetch_text(client, list_url)
         return self.parse_chapter_links(html, list_url)
 
     async def image_urls(self, client: httpx.AsyncClient, chapter_url: str) -> list[str]:
         """The page's largest coherent group of image URLs, in document order."""
-        html = await self._page_html(client, chapter_url)
+        html = await self.fetch_text(client, chapter_url)
         return self.parse_image_urls(html, chapter_url)
 
     # ---- page parsing helpers ----------------------------------------------
-
-    @staticmethod
-    async def _page_html(client: httpx.AsyncClient, url: str) -> str:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        return resp.text
 
     @classmethod
     def chapter_number_from_text(cls, text: str) -> float | None:

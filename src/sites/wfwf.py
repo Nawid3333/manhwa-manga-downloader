@@ -64,14 +64,14 @@ class WfwfDriver(SiteDriver):
         qs = parse_qs(urlparse(list_url).query)
         sort = qs.get("s", ["o"])[0] or "o"
 
-        first_html = await self._fetch_text(client, self._list_url(slug, sort, 1))
+        first_html = await self.fetch_text(client, self._list_url(slug, sort, 1))
         pages = self._parse_pagination_pages(first_html)
 
         semaphore = asyncio.Semaphore(CHAPTER_PAGE_CONCURRENCY)
 
         async def _page(p: int) -> list[tuple[str, str]]:
             async with semaphore:
-                html = await self._fetch_text(client, self._list_url(slug, sort, p))
+                html = await self.fetch_text(client, self._list_url(slug, sort, p))
                 return self._parse_chapter_links(html)
 
         results = await asyncio.gather(*(_page(p) for p in pages), return_exceptions=True)
@@ -89,15 +89,10 @@ class WfwfDriver(SiteDriver):
         return [(self._normalize(href), self._num_from_title(title)) for href, title in all_links]
 
     async def image_urls(self, client: httpx.AsyncClient, chapter_url: str) -> list[str]:
-        html = await self._fetch_text(client, chapter_url)
+        html = await self.fetch_text(client, chapter_url)
         return self._parse_image_urls(html)
 
     # ---- internals ---------------------------------------------------------
-
-    async def _fetch_text(self, client: httpx.AsyncClient, url: str) -> str:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        return resp.text
 
     @staticmethod
     def _list_url(slug: str, sort: str = "o", page: int = 1) -> str:

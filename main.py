@@ -27,7 +27,17 @@ from urllib.parse import urlparse
 
 import httpx
 
-from config import CONVERT_TO_JPEG, DOWNLOADS_DIR, JPEG_QUALITY, LOGS_DIR, Site, classify_url, resolve_site
+from config import (
+    CONVERT_TO_JPEG,
+    DOWNLOADS_DIR,
+    JPEG_QUALITY,
+    LOGS_DIR,
+    SUPPORTED_SITES,
+    Site,
+    classify_url,
+    resolve_site,
+)
+from src.base import SiteDriver
 from src.convert import convert_tree
 from term import (
     cconfirm,
@@ -60,8 +70,6 @@ def banner() -> str:
 
 
 def supported_sites() -> None:
-    from config import SUPPORTED_SITES
-
     list_sites_table(SUPPORTED_SITES)
 
 
@@ -79,7 +87,7 @@ def resolve_input(raw: str) -> tuple[str, str | None]:
     return url, None
 
 
-def choose_output_dir(url: str, driver) -> Path:
+def choose_output_dir(url: str, driver: SiteDriver) -> Path:
     """Default output directory: downloads/<site>/<series-slug>."""
     return DOWNLOADS_DIR / driver.key / driver.series_folder(url)
 
@@ -103,10 +111,6 @@ def note_previous_incomplete(out_dir: Path) -> None:
         names = ", ".join(c.get("folder", "?") for c in chapters)
         cwarning(f"{len(chapters)} chapter(s) from a previous run are still incomplete: {names}")
         cinfo("This run will retry them automatically.")
-
-
-async def _count_chapters(driver, url: str):
-    return await driver.count_chapters(url)
 
 
 class _Parser(argparse.ArgumentParser):
@@ -215,7 +219,7 @@ def run(args: argparse.Namespace, *, interactive: bool) -> tuple[int, dict[str, 
             target = override or choose_output_dir(url, driver)
             cinfo(f"Series folder: {target}")
             try:
-                links = asyncio.run(_count_chapters(driver, url))
+                links = asyncio.run(driver.count_chapters(url))
             except Exception as exc:
                 raise RunError(f"Could not read chapter list: {exc}") from exc
             if not links:

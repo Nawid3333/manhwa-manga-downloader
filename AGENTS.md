@@ -77,8 +77,9 @@ non-JPEG image to JPEG after each run.
 
 ## Non-negotiables
 
-- Windows 11 is the primary environment; code must also run on Linux
-  (CI runs lint/type on `ubuntu-latest` and `windows-latest`).
+- Windows 11 is the primary environment; code must also run on Linux.
+  CI (`ci.yml`) runs lint, format, type check and tests on `windows-latest`
+  only, so a Linux-only breakage is yours to catch locally.
 - Python floor is 3.11 (`requires-python`); CI tests the floor version, so
   never use a newer-only API without raising the floor deliberately.
 - The target image format is always JPEG (quality 90). Non-JPEG downloads
