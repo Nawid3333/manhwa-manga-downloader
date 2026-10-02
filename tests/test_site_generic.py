@@ -38,6 +38,10 @@ def test_identity_is_the_lowest_priority_catch_all():
         (f"{HOST}/series/search-results/", "list", None),
         (f"{HOST}/comic/watch-me/", "list", None),
         (f"{HOST}/comic/epic-tale/", "list", None),
+        (f"{HOST}/manga/12345/", "list", None),
+        (f"{HOST}/comic/987", "list", None),
+        (f"{HOST}/manga/12345/7/", "chapter", 7.0),
+        (f"{HOST}/one-piece/1050/", "chapter", 1050.0),
     ],
 )
 def test_classify_and_chapter_number(url: str, kind: str, num: float | None):

@@ -34,7 +34,11 @@ _CHAPTER_WORD_RE = re.compile(
 # A chapter word without a number ("/chapter/latest") still marks a chapter link.
 _CHAPTER_HINT_RE = re.compile(r"(?:^|[/_\-.])(?:chapter|chap|ch|episode|ep)(?=[\-_/ .]|\d)", re.I)
 # A final numeric segment under a series path: /manga/one-piece/1050/ (or .html).
-_TRAILING_NUM_RE = re.compile(r"^/(?:[^/]+/)+(\d+)(?:\.html?)?/?$")
+_TRAILING_NUM_RE = re.compile(r"^/(?:[^/]+/)*([^/]+)/(\d+)(?:\.html?)?/?$")
+# Parents under which a bare number is a series id, not a chapter: /manga/12345/, /comic/987.
+_SERIES_INDEX_WORDS = frozenset(
+    {"manga", "manhwa", "manhua", "series", "comic", "comics", "webtoon", "webtoons", "title", "titles", "book"}
+)
 _TEXT_CHAPTER_RE = re.compile(r"(?:chapter|chap|ch|episode|ep)\.?\s*(\d+(?:\.\d+)?)", re.I)
 _TEXT_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)")
 
@@ -57,6 +61,14 @@ def _host(url: str) -> str:
 def _origin(url: str) -> str:
     parsed = urlparse(url)
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _trailing_chapter(path: str) -> re.Match[str] | None:
+    """The final-number match of a path when that number is a chapter (not a series id under /manga/ & co)."""
+    m = _TRAILING_NUM_RE.match(path)
+    if m is None or m.group(1).lower() in _SERIES_INDEX_WORDS:
+        return None
+    return m
 
 
 def _to_num(whole: str, frac: str | None) -> float:
@@ -116,15 +128,15 @@ class GenericDriver(SiteDriver):
         m = _CHAPTER_WORD_RE.search(path)
         if m:
             return _to_num(m.group(1), m.group(2))
-        m = _TRAILING_NUM_RE.match(path)
+        m = _trailing_chapter(path)
         if m:
-            return float(m.group(1))
+            return float(m.group(2))
         return None
 
     @staticmethod
     def looks_like_chapter(url: str) -> bool:
         path = unquote(urlparse(url).path)
-        return bool(_CHAPTER_HINT_RE.search(path) or _TRAILING_NUM_RE.match(path))
+        return bool(_CHAPTER_HINT_RE.search(path) or _trailing_chapter(path))
 
     def classify(self, url: str) -> str:
         return "chapter" if self.chapter_number_from_url(url) is not None else "list"
@@ -136,9 +148,9 @@ class GenericDriver(SiteDriver):
         if m:
             path = path[: m.start()]
         else:
-            m = _TRAILING_NUM_RE.match(path)
+            m = _trailing_chapter(path)
             if m:
-                path = path[: m.start(1)]
+                path = path[: m.start(2)]
         segments = [s for s in path.split("/") if s]
         while len(segments) > 1 and segments[-1].lower() in _LISTING_WORDS:
             segments.pop()
