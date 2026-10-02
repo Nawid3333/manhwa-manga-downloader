@@ -41,6 +41,19 @@ def test_parse_range(text: str, total: int, expected: list[int]):
     assert parse_range(text, total) == expected
 
 
+@pytest.mark.parametrize(
+    ("text", "first", "last", "expected"),
+    [
+        ("0", 0, 3, [0]),
+        ("all", 0, 2, [0, 1, 2]),
+        ("150-152", 100, 151, [150, 151]),
+        ("1-5", 100, 151, []),
+    ],
+)
+def test_parse_range_bounds_are_chapter_numbers(text: str, first: int, last: int, expected: list[int]):
+    assert parse_range(text, last, first) == expected
+
+
 @pytest.mark.parametrize("text", ["abc", "1-", "-3", "3-1", "1,x", "1..3"])
 def test_parse_range_rejects_garbage(text: str):
     with pytest.raises(ValueError):
@@ -76,8 +89,9 @@ class FakeDriver(SiteDriver):
     name = "Fake Site"
     domains = ("fake.test",)
 
-    def __init__(self, handler):
+    def __init__(self, handler, numbers=(1, 2, 3)):
         self._handler = handler
+        self._numbers = numbers
 
     def client(self, **kwargs) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self._handler))
@@ -89,7 +103,7 @@ class FakeDriver(SiteDriver):
         return "series"
 
     async def list_chapters(self, client, url):
-        return [(f"https://fake.test/chapter/{n}", float(n)) for n in (1, 2, 3)]
+        return [(f"https://fake.test/chapter/{n}", float(n)) for n in self._numbers]
 
     async def image_urls(self, client, chapter_url):
         return [f"{chapter_url}/0.jpg"]
@@ -111,9 +125,9 @@ def cli(tmp_path: Path, jpeg_bytes: bytes, monkeypatch: pytest.MonkeyPatch, cons
     monkeypatch.setattr(main, "LOGS_DIR", tmp_path / "logs")
     monkeypatch.setattr(main, "DOWNLOADS_DIR", tmp_path / "downloads")
 
-    def _run(argv: list[str], handler=None, site_key: str = "fake", capsys=None):
+    def _run(argv: list[str], handler=None, site_key: str = "fake", capsys=None, numbers=(1, 2, 3)):
         handler = handler or (lambda r: httpx.Response(200, content=jpeg_bytes))
-        driver = FakeDriver(handler)
+        driver = FakeDriver(handler, numbers)
         site = config.Site(key=site_key, name="Fake Site", domains=("fake.test",), module="fake", driver=driver)
 
         async def fake_resolve(url: str, **kwargs):
@@ -158,6 +172,17 @@ def test_chapters_range_filters_the_listing(cli, tmp_path: Path, capsys):
     assert code == 0
     assert json.loads(out.out)["chapters"] == 1
     assert (out_dir / "ch2").exists() and not (out_dir / "ch1").exists()
+
+
+def test_chapters_selects_by_number_not_by_position(cli, tmp_path: Path, capsys):
+    """A listing of 4 chapters numbered 0, 1, 150, 151: '150-151' and '0' must reach them."""
+    out_dir = tmp_path / "out"
+    argv = ["https://fake.test/series", "--out", str(out_dir), "-y", "--json", "--no-convert"]
+    code, out = cli([*argv, "--chapters", "150-151"], capsys=capsys, numbers=(0, 1, 150, 151))
+    assert code == 0 and json.loads(out.out)["chapters"] == 2
+    assert (out_dir / "ch150").exists() and (out_dir / "ch151").exists() and not (out_dir / "ch1").exists()
+    code, out = cli([*argv, "--chapters", "0"], capsys=capsys, numbers=(0, 1, 150, 151))
+    assert code == 0 and json.loads(out.out)["chapters"] == 1 and (out_dir / "ch0").exists()
 
 
 def test_yes_without_chapters_means_all_and_default_out_dir(cli, tmp_path: Path, capsys):

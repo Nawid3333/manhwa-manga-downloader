@@ -202,17 +202,20 @@ def prompt_choice(prompt: str, choices: list[str]) -> str:
         cerror("Invalid choice. Please enter a number or exact label.")
 
 
-def parse_range(text: str, total: int) -> list[int]:
-    """Parse a chapter selection into sorted chapter numbers within 1..total.
+def parse_range(text: str, last: int, first: int = 1) -> list[int]:
+    """Parse a chapter selection into sorted chapter numbers within first..last.
 
     Accepts 'all' (also '*' or blank), a single number ('5'), a range
     ('1-10'), and comma lists mixing both ('1,3,5-7'). Ranges are clamped to
-    1..total and single numbers outside it are dropped, so the result can be
-    empty; text that is not a selection at all raises ValueError.
+    first..last and single numbers outside it are dropped, so the result can
+    be empty; text that is not a selection at all raises ValueError. The
+    bounds are chapter *numbers* (what SiteDriver.select_chapters filters
+    on), not positions in the listing: a series can start at chapter 0 or
+    have gaps, so they come from the listing's lowest and highest number.
     """
     raw = text.strip().lower()
     if raw in ("all", "*", ""):
-        return list(range(1, total + 1))
+        return list(range(first, last + 1))
     selected: set[int] = set()
     for part in raw.split(","):
         part = part.strip()
@@ -224,21 +227,21 @@ def parse_range(text: str, total: int) -> list[int]:
                 start, end = int(start_text), int(end_text)
                 if start > end:
                     raise ValueError(part)
-                selected.update(range(max(1, start), min(total, end) + 1))
+                selected.update(range(max(first, start), min(last, end) + 1))
             else:
                 num = int(part)
-                if 1 <= num <= total:
+                if first <= num <= last:
                     selected.add(num)
         except ValueError:
             raise ValueError(f"Could not parse chapter selection {text!r}") from None
     return sorted(selected)
 
 
-def prompt_range(total: int) -> list[int]:
+def prompt_range(last: int, first: int = 1) -> list[int]:
     """Ask for a chapter range such as '1-10', '1,3,5-7', 'all', or a single number."""
-    raw = cinput(f"Which chapters? (1-{total}, range like 1-10, list like 1,3,5-7, or 'all'): ", color="yellow")
+    raw = cinput(f"Which chapters? ({first}-{last}, range like 1-10, list like 1,3,5-7, or 'all'): ", color="yellow")
     try:
-        return parse_range(raw, total)
+        return parse_range(raw, last, first)
     except ValueError:
         cwarning(f"Could not parse '{raw.strip()}' — downloading all chapters instead.")
-        return list(range(1, total + 1))
+        return list(range(first, last + 1))

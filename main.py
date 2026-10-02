@@ -125,22 +125,29 @@ class RunError(Exception):
     """A run that cannot continue; the message is for the user."""
 
 
-def _select_chapters(args: argparse.Namespace, total: int, interactive: bool) -> list[int] | None:
-    """Chapter numbers to download for a list URL (None = all)."""
+def _select_chapters(args: argparse.Namespace, links: list[tuple[str, float]], interactive: bool) -> list[int] | None:
+    """Chapter numbers to download for a list URL (None = all).
+
+    Selections are chapter numbers, bounded by the listing's lowest and
+    highest one -- not 1..len(links), which would hide chapter 0 and every
+    chapter above the count when a series starts late or has gaps.
+    """
+    numbers = [int(num) for _, num in links]
+    first, last = min(numbers), max(numbers)
     if args.chapters is not None:
         text = args.chapters.strip().lower()
         if text in ("all", "*", ""):
             return None
         try:
-            selected = parse_range(args.chapters, total)
+            selected = parse_range(args.chapters, last, first)
         except ValueError as exc:
             raise RunError(str(exc)) from None
         if not selected:
-            raise RunError(f"No chapters in 1-{total} match {args.chapters!r}.")
+            raise RunError(f"No chapters in {first}-{last} match {args.chapters!r}.")
         return selected
     if args.yes and not interactive:
         return None
-    selected = prompt_range(total)
+    selected = prompt_range(last, first)
     if not selected:
         raise RunError("No chapters selected.")
     return selected
@@ -193,11 +200,10 @@ def run(args: argparse.Namespace, *, interactive: bool) -> tuple[int, dict[str, 
                 links = asyncio.run(_count_chapters(driver, url))
             except Exception as exc:
                 raise RunError(f"Could not read chapter list: {exc}") from exc
-            total = len(links)
-            if total == 0:
+            if not links:
                 raise RunError("No chapters found on that list page.")
-            cinfo(f"Found {total} chapter(s).")
-            chapters = _select_chapters(args, total, interactive)
+            cinfo(f"Found {len(links)} chapter(s).")
+            chapters = _select_chapters(args, links, interactive)
         else:
             raise RunError("Could not determine whether this is a list or chapter URL.")
         out_dir = target
