@@ -246,3 +246,21 @@ async def test_list_chapters_skips_slugs_that_are_not_one_number(mock_client):
     async with mock_client(lambda r: _chapters_page(chapters, has_more=False)) as client:
         result = await driver.list_chapters(client, LIST_URL)
     assert [num for _, num in result] == [1.0, 2.0]
+
+
+async def test_list_chapters_keeps_dotted_slugs(mock_client):
+    """The API names some chapters chapter-0.5 / chapter-113.1 rather than chapter-0-5: about 1 in 100."""
+    chapters = [{"chapter_slug": "chapter-2"}, {"chapter_slug": "chapter-0.5"}, {"chapter_slug": "chapter-113.1"}]
+    async with mock_client(lambda r: _chapters_page(chapters, has_more=False)) as client:
+        result = await driver.list_chapters(client, LIST_URL)
+    assert [num for _, num in result] == [0.5, 2.0, 113.1]
+    assert driver.cdn_label(result[0][0]) == "0.5"
+    assert driver.folder_name(result[0][0]) == "num0.5_Chapter 0.5"
+
+
+async def test_image_urls_finds_a_chapter_on_any_host_of_the_pool(mock_client):
+    assert "https://img-r2.2xstorage.com" in CDN_HOSTS  # served a quarter of the chapters in a live sample
+    for host in CDN_HOSTS:
+        async with mock_client(_cdn_handler(host, page_count=3)) as client:
+            urls = await driver.image_urls(client, CHAPTER_URL)
+        assert [u.startswith(host) for u in urls] == [True, True, True]
