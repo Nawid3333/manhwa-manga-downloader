@@ -43,7 +43,9 @@ non-JPEG image to JPEG after each run.
 - `src/common.py` — shared HTTP client setup (limits, retries) and the
   generic downloader (`make_downloader`): concurrency-capped image fetching,
   `.part` atomic writes, resume logic with `_plausible_download` validation
-  (0-byte/truncated leftovers are re-downloaded, not trusted).
+  (0-byte/truncated leftovers are re-downloaded, not trusted). A page is
+  saved under the extension of its decoded format (`_suffix_for`), never
+  trusted from its URL.
 - `src/convert.py` — post-download JPEG conversion. See below.
 - `src/htmlutil.py` — lxml helpers (`attr`, text extraction).
 - `term.py` — console output helpers (`cinfo`, `cwarning`, `cerror`, ...).

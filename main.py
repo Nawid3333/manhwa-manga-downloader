@@ -173,11 +173,26 @@ def _select_chapters(args: argparse.Namespace, links: list[tuple[str, float]], i
     return selected
 
 
-def _result(site: Site | None, out_dir: Path | None, stats: dict[str, Any] | None, error: str | None) -> dict[str, Any]:
+def _series_name(driver: Any, url: str) -> str | None:
+    """The series folder name the driver gives `url` (its `downloads/<site>/<series>` name), or None."""
+    try:
+        return driver.series_folder(url)
+    except ValueError:  # e.g. a chapter URL that does not carry the series
+        return None
+
+
+def _result(
+    site: Site | None,
+    out_dir: Path | None,
+    stats: dict[str, Any] | None,
+    error: str | None,
+    series: str | None = None,
+) -> dict[str, Any]:
     stats = stats or {}
     result: dict[str, Any] = {
         "schema": RESULT_SCHEMA,
         "site": site.key if site else None,
+        "series": series,
         "out_dir": str(out_dir) if out_dir else None,
         "chapters": int(stats.get("chapters", 0)),
         "images": int(stats.get("images", 0)),
@@ -194,6 +209,7 @@ def run(args: argparse.Namespace, *, interactive: bool) -> tuple[int, dict[str, 
     """One download run; returns (exit code, result object) and never raises for user-facing errors."""
     site: Site | None = None
     out_dir: Path | None = None
+    series: str | None = None
     try:
         raw = cinput("\nPaste a series list URL or chapter URL: ", color="green") if interactive else args.url
         url, err = resolve_input(raw)
@@ -210,6 +226,7 @@ def run(args: argparse.Namespace, *, interactive: bool) -> tuple[int, dict[str, 
             cinfo(f"Site: {site.name}")
 
         kind = classify_url(url, site)
+        series = _series_name(driver, url)
         override: Path | None = Path(args.out) if args.out else None
         if kind == "chapter":
             cinfo("Chapter URL detected — only this chapter will be downloaded.")
@@ -234,7 +251,7 @@ def run(args: argparse.Namespace, *, interactive: bool) -> tuple[int, dict[str, 
         note_previous_incomplete(target)
         if not args.yes and not cconfirm("Start download?", default=True):
             cinfo("Aborted.")
-            return EXIT_OK, _result(site, out_dir, None, None)
+            return EXIT_OK, _result(site, out_dir, None, None, series)
 
         stats = asyncio.run(driver.download_series_url(url, target, chapters=chapters))
         csuccess(f"Done! {stats.get('chapters', 0)} chapter(s), {stats.get('images', 0)} image(s) downloaded.")
@@ -248,26 +265,26 @@ def run(args: argparse.Namespace, *, interactive: bool) -> tuple[int, dict[str, 
         if CONVERT_TO_JPEG and not args.no_convert:
             convert_tree(target, quality=JPEG_QUALITY)
         code = EXIT_INCOMPLETE if incomplete or stats.get("failed_chapters") else EXIT_OK
-        return code, _result(site, out_dir, stats, None)
+        return code, _result(site, out_dir, stats, None, series)
     except RunError as exc:
         cerror(str(exc))
-        return EXIT_ERROR, _result(site, out_dir, None, str(exc))
+        return EXIT_ERROR, _result(site, out_dir, None, str(exc), series)
     except httpx.HTTPStatusError as exc:
         message = f"HTTP error {exc.response.status_code}: {exc.request.url}"
         cerror(message)
-        return EXIT_ERROR, _result(site, out_dir, None, message)
+        return EXIT_ERROR, _result(site, out_dir, None, message, series)
     except httpx.HTTPError as exc:
         message = f"Network error: {exc}"
         cerror(message)
-        return EXIT_ERROR, _result(site, out_dir, None, message)
+        return EXIT_ERROR, _result(site, out_dir, None, message, series)
     except Exception as exc:
         message = f"Download failed: {exc}"
         cerror(message)
-        return EXIT_ERROR, _result(site, out_dir, None, message)
+        return EXIT_ERROR, _result(site, out_dir, None, message, series)
     except KeyboardInterrupt:
         message = "Aborted by user."
         cerror(message)
-        return EXIT_ABORTED, _result(site, out_dir, None, message)
+        return EXIT_ABORTED, _result(site, out_dir, None, message, series)
 
 
 def main(argv: list[str] | None = None) -> None:

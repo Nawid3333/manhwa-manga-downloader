@@ -155,6 +155,7 @@ def test_json_run_prints_one_object_on_stdout_and_messages_on_stderr(cli, tmp_pa
     assert result == {
         "schema": 1,
         "site": "fake",
+        "series": "series",
         "out_dir": str(out_dir),
         "chapters": 3,
         "images": 3,
@@ -215,6 +216,15 @@ def test_incomplete_chapters_exit_with_2(cli, tmp_path: Path, capsys):
     assert result["incomplete_chapters"] == ["ch4"]
     assert result["complete_chapters"] == []
     assert result["images"] == 0
+
+
+def test_series_is_null_when_the_driver_cannot_name_it(cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys):
+    def no_series(self, url: str) -> str:
+        raise ValueError(f"Could not extract series slug from {url}")
+
+    monkeypatch.setattr(FakeDriver, "series_slug", no_series)
+    code, out = cli(["https://fake.test/chapter/1", "--out", str(tmp_path / "o"), "-y", "--json"], capsys=capsys)
+    assert code == 0 and json.loads(out.out)["series"] is None
 
 
 def test_usage_error_exits_with_1_not_the_incomplete_code(capsys):

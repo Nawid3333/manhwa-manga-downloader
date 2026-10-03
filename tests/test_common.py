@@ -678,3 +678,124 @@ async def test_manifest_entry_is_dropped_when_a_chapter_goes_incomplete(tmp_path
         await downloader(client, ["https://fake.test/ch1"], tmp_path)
 
     assert not manifest_path.exists()
+
+
+# ---- bookkeeping writes and folder collisions ----------------------------------
+
+
+def test_a_failed_report_write_leaves_the_previous_report_intact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """An unreadable incomplete_chapters.json reads as "nothing incomplete" (here and in OmniScan's importer),
+    so a write cut short by a crash or a full disk must never replace the old report with half a file."""
+    previous = common.ChapterResult("ch1", "https://fake.test/ch1", ok=1, total=3, complete=False)
+    common._write_incomplete_report(tmp_path, [previous])
+    report = tmp_path / "incomplete_chapters.json"
+    before = report.read_text(encoding="utf-8")
+    real_write_text = Path.write_text
+
+    def disk_full(self: Path, data: str, *args, **kwargs) -> int:
+        real_write_text(self, data[:10], *args, **kwargs)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_text", disk_full)
+    later = common.ChapterResult("ch2", "https://fake.test/ch2", ok=0, total=2, complete=False)
+    with pytest.raises(OSError):
+        common._write_incomplete_report(tmp_path, [later])
+
+    assert report.read_text(encoding="utf-8") == before
+    assert json.loads(before)["chapters"][0]["folder"] == "ch1"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["incomplete_chapters.json"]  # no half-written leftovers
+
+
+async def test_two_urls_for_one_folder_download_once(tmp_path: Path, mock_client, jpeg_bytes: bytes):
+    """The same chapter listed under two URLs must not be fetched into one folder twice at once."""
+    fetched: list[str] = []
+
+    async def fetch(_client: httpx.AsyncClient, chapter_url: str) -> list[str]:
+        fetched.append(chapter_url)
+        return [f"{chapter_url}/0.jpg"]
+
+    downloader = common.make_downloader(
+        site_label="fake",
+        fetch_image_urls=fetch,
+        chapter_folder_name=lambda url: "num2_chapter",
+    )
+    urls = ["https://fake.test/view?num=2", "https://fake.test/view?num=2&ref=list"]
+    async with mock_client(lambda r: httpx.Response(200, content=jpeg_bytes)) as client:
+        stats = await downloader(client, urls, tmp_path)
+
+    assert fetched == ["https://fake.test/view?num=2"]
+    assert stats["complete_chapters"] == ["num2_chapter"]
+
+
+# ---- pages are named after what they are, not after their URL -------------------------------
+
+
+def _image_bytes(fmt: str) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.effect_noise((48, 48), 40).convert("RGB").save(buf, format=fmt)
+    return buf.getvalue()
+
+
+async def _download_one(tmp_path: Path, mock_client, url: str, handler) -> dict:
+    downloader = common.make_downloader(
+        site_label="fake",
+        fetch_image_urls=lambda _client, _chapter: _async([url]),
+        chapter_folder_name=lambda _url: "ch1",
+    )
+    async with mock_client(handler) as client:
+        return await downloader(client, ["https://fake.test/ch1"], tmp_path)
+
+
+async def _async(value):
+    return value
+
+
+@pytest.mark.parametrize(
+    ("url", "fmt", "saved"),
+    [
+        ("https://cdn.test/image.php?id=3", "PNG", "0001.png"),  # a script URL: the suffix is no image type
+        ("https://cdn.test/pages/1.jpg", "WEBP", "0001.webp"),  # a CDN answering a .jpg URL with WebP
+        ("https://cdn.test/pages/1", "JPEG", "0001.jpg"),  # no suffix at all
+        ("https://cdn.test/pages/1.jpeg", "JPEG", "0001.jpeg"),  # a suffix that already names the format stays
+        ("https://cdn.test/pages/1.bmp", "BMP", "0001.bmp"),
+        ("https://cdn.test/pages/1.jfif", "JPEG", "0001.jpg"),  # OmniScan's importer does not read .jfif
+    ],
+)
+async def test_a_page_is_saved_under_the_extension_of_its_real_format(
+    tmp_path: Path, mock_client, url: str, fmt: str, saved: str
+):
+    body = _image_bytes(fmt)
+    stats = await _download_one(tmp_path, mock_client, url, lambda r: httpx.Response(200, content=body))
+
+    assert stats["complete_chapters"] == ["ch1"]
+    assert sorted(p.name for p in (tmp_path / "ch1").iterdir()) == [saved]
+
+
+async def test_resume_finds_a_page_saved_under_another_extension(tmp_path: Path, mock_client):
+    (tmp_path / "ch1").mkdir()
+    (tmp_path / "ch1" / "0001.png").write_bytes(_image_bytes("PNG"))
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(404)
+
+    stats = await _download_one(tmp_path, mock_client, "https://cdn.test/image.php?id=3", handler)
+
+    assert requests == [] and stats["complete_chapters"] == ["ch1"]
+
+
+async def test_a_broken_leftover_under_another_extension_is_replaced(tmp_path: Path, mock_client):
+    (tmp_path / "ch1").mkdir()
+    (tmp_path / "ch1" / "0001.jpg").write_bytes(FAKE_JPEG_BYTES)  # truncated garbage from an earlier try
+    body = _image_bytes("PNG")
+
+    await _download_one(
+        tmp_path, mock_client, "https://cdn.test/pages/1.jpg", lambda r: httpx.Response(200, content=body)
+    )
+
+    assert sorted(p.name for p in (tmp_path / "ch1").iterdir()) == ["0001.png"]

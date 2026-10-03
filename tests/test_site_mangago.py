@@ -106,3 +106,20 @@ def test_registry_keeps_mangago_and_a_clean_stdout_without_playwright():
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == ""
     assert "mangago" in proc.stderr.split(",")
+
+
+async def test_session_cookie_goes_to_mangago_only_never_to_the_image_cdn(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(mangago, "find_spec", lambda name: object())
+    monkeypatch.setenv("MANGAGO_COOKIE", "PHPSESSID=secret; other=1")
+    sent: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent[request.url.host] = request.headers.get("cookie")
+        return httpx.Response(200)
+
+    async with driver.client(transport=httpx.MockTransport(handler)) as client:
+        await client.get(f"{BASE}/read-manga/it_s_mine/")
+        await client.get("https://iweb_3.mangapicgallery.com/r/newpiclink/it_s_mine/157/1.jpg")
+
+    assert sent["www.mangago.me"] == "PHPSESSID=secret; other=1"
+    assert sent["iweb_3.mangapicgallery.com"] is None

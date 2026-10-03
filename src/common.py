@@ -172,27 +172,91 @@ class AdaptiveLimiter:
 
 # Minimum plausible image: magic bytes present and not absurdly small.
 _MIN_IMAGE_BYTES = 512
-_IMAGE_MAGIC = (b"\xff\xd8", b"RIFF", b"\x89PNG", b"GIF8", b"II*\x00", b"MM\x00*", b"\x00\x00\x00 ftyp")
+_IMAGE_MAGIC = (b"\xff\xd8", b"RIFF", b"\x89PNG", b"GIF8", b"II*\x00", b"MM\x00*", b"BM")
+# AVIF/HEIF start with an `ftyp` box whose 4-byte size varies by encoder (0x18, 0x1c, 0x20, ...).
+_FTYP_AT = slice(4, 8)
+
+# File extensions a page may be saved under, and the ones that name each
+# format Pillow reports (the first is the canonical one). A page is saved
+# under the extension of what it actually is: a URL's own suffix can be a
+# script (`image.php?id=3`), missing, or wrong (a CDN answering a `.jpg`
+# URL with WebP), and a file named for the wrong format is skipped by the
+# JPEG pass and by OmniScan's importer.
+IMAGE_EXTS = (".jpg", ".jpeg", ".jfif", ".png", ".webp", ".gif", ".avif", ".bmp", ".tif", ".tiff")
+# `.jfif` is found on resume but never written: OmniScan's importer does not list it as an image.
+_FORMAT_EXTS: dict[str, tuple[str, ...]] = {
+    "JPEG": (".jpg", ".jpeg"),
+    "MPO": (".jpg", ".jpeg"),  # multi-picture JPEG, e.g. from a phone camera
+    "PNG": (".png",),
+    "WEBP": (".webp",),
+    "GIF": (".gif",),
+    "AVIF": (".avif",),
+    "BMP": (".bmp",),
+    "TIFF": (".tif", ".tiff"),
+}
 
 
-def _verify_image_sync(path: Path) -> bool:
-    """Real decode check, not just a magic-byte sniff.
+def page_suffix(url: str) -> str:
+    """The extension a page from `url` is first expected under: the URL's own when it names an image, else .jpg."""
+    suffix = Path(urlparse(url).path).suffix.lower()
+    return suffix if suffix in IMAGE_EXTS else ".jpg"
 
-    A dropped HTTP/2 stream or an overloaded CDN can answer a "200 OK" with
-    a body that starts correctly but is truncated mid-image; that passes a
-    magic-byte check and would otherwise be accepted as a complete download.
-    A full `.load()` forces Pillow to decode every scanline, so a truncated
-    JPEG -- the common shape of a cut-off stream -- raises instead of
-    silently succeeding the way the cheaper `.verify()` sometimes does.
-    Pillow's default (LOAD_TRUNCATED_IMAGES = False) is what makes that
-    raise; this never overrides it.
+
+def _suffix_for(fmt: str, expected: str) -> str:
+    """The extension to save a page of Pillow format `fmt` under; `expected` when it already names that format."""
+    names = _FORMAT_EXTS.get(fmt)
+    if names is None:
+        return expected
+    return expected if expected in names else names[0]
+
+
+def _decoded_format_sync(path: Path) -> str | None:
+    """The image format of `path` when it decodes completely, else None.
+
+    A real decode check, not just a magic-byte sniff: a dropped HTTP/2
+    stream or an overloaded CDN can answer a "200 OK" with a body that
+    starts correctly but is truncated mid-image; that passes a magic-byte
+    check and would otherwise be accepted as a complete download. A full
+    `.load()` forces Pillow to decode every scanline, so a truncated JPEG --
+    the common shape of a cut-off stream -- raises instead of silently
+    succeeding the way the cheaper `.verify()` sometimes does. Pillow's
+    default (LOAD_TRUNCATED_IMAGES = False) is what makes that raise; this
+    never overrides it.
     """
     try:
         with Image.open(path) as img:
             img.load()
-        return True
+            return img.format or ""
     except (OSError, UnidentifiedImageError, ValueError):
-        return False
+        return None
+
+
+async def _image_format(path: Path) -> str | None:
+    """The format of a complete, structurally valid image at `path`, else None.
+
+    The cheap checks (existence, size, magic bytes) run first so a missing
+    file -- the common case for a fresh download -- never pays for a decode;
+    only a file that clears them goes through the thread-offloaded decode so
+    the event loop doesn't block while other downloads are in flight.
+    """
+    try:
+        if path.stat().st_size < _MIN_IMAGE_BYTES:
+            return None
+        with path.open("rb") as f:
+            head = f.read(16)
+    except OSError:
+        return None
+    if not (head.startswith(_IMAGE_MAGIC) or head[_FTYP_AT] == b"ftyp"):
+        return None
+    return await asyncio.to_thread(_decoded_format_sync, path)
+
+
+async def _any_plausible(paths: list[Path]) -> bool:
+    """True when one of `paths` passes _plausible_download (checked in order, stopping at the first)."""
+    for path in paths:
+        if await _plausible_download(path):
+            return True
+    return False
 
 
 async def _plausible_download(path: Path) -> bool:
@@ -200,21 +264,9 @@ async def _plausible_download(path: Path) -> bool:
 
     Used both for resume (is a file already on disk from a previous run
     actually good, or should it be re-downloaded?) and to validate a
-    freshly-written file before it's accepted. The cheap checks (existence,
-    size, magic bytes) run first so a missing file -- the common case for a
-    fresh download -- never pays for a decode; only a file that clears both
-    goes through the thread-offloaded PIL verify so the event loop doesn't
-    block while other downloads are in flight.
+    freshly-written file before it's accepted (see _image_format).
     """
-    try:
-        if path.stat().st_size < _MIN_IMAGE_BYTES:
-            return False
-        with path.open("rb") as f:
-            if not f.read(16).startswith(_IMAGE_MAGIC):
-                return False
-    except OSError:
-        return False
-    return await asyncio.to_thread(_verify_image_sync, path)
+    return await _image_format(path) is not None
 
 
 def client(
@@ -254,6 +306,23 @@ class ChapterResult:
     complete: bool
 
 
+def _write_json_atomic(path: Path, data: object) -> None:
+    """Write `data` as JSON to `path` through a temp file and a rename.
+
+    A crash or a full disk mid-write then leaves the previous file intact
+    instead of a truncated one -- which matters most for
+    incomplete_chapters.json: an unreadable report reads as "nothing is
+    incomplete", to this engine and to OmniScan's importer alike.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def _write_incomplete_report(out_dir: Path, results: list[ChapterResult]) -> None:
     """Merge this run's outcome into out_dir/incomplete_chapters.json.
 
@@ -287,10 +356,7 @@ def _write_incomplete_report(out_dir: Path, results: list[ChapterResult]) -> Non
             }
 
     if entries:
-        path.write_text(
-            json.dumps({"chapters": sorted(entries.values(), key=lambda e: e["folder"])}, indent=2),
-            encoding="utf-8",
-        )
+        _write_json_atomic(path, {"chapters": sorted(entries.values(), key=lambda e: e["folder"])})
     elif path.exists():
         path.unlink()
 
@@ -332,7 +398,7 @@ def _write_manifest(out_dir: Path, results: list[ChapterResult]) -> None:
             entries.pop(r.folder, None)
 
     if entries:
-        path.write_text(json.dumps({"chapters": dict(sorted(entries.items()))}, indent=2), encoding="utf-8")
+        _write_json_atomic(path, {"chapters": dict(sorted(entries.items()))})
     elif path.exists():
         path.unlink()
 
@@ -386,13 +452,14 @@ def make_downloader(
         # it. `image_sem` also gets told whether this attempt succeeded so
         # it can shrink/grow the allowed concurrency (see AdaptiveLimiter).
         #
-        # jpg_sibling: the target format is always JPEG (see src/convert.py),
-        # and that conversion deletes the original -- so on a re-run, a file
-        # already converted from a previous run only exists at the `.jpg`
-        # path, not at whatever extension this chapter's (freshly refetched)
-        # source URL still has. Checking both is what makes resume actually
-        # skip already-converted images instead of redownloading them.
-        jpg_sibling = dest if dest.suffix.lower() == ".jpg" else dest.with_suffix(".jpg")
+        # Resume looks at every image extension of the page's stem, not just
+        # `dest`'s: the post-run conversion (src/convert.py) renames each
+        # non-JPEG page to `.jpg`, and a page is saved under the extension
+        # of its real format, which a URL can name wrongly or not at all --
+        # so the file a previous run left can sit at a different extension
+        # than this run's (freshly refetched) URL suggests. Checking them all
+        # is what makes resume skip finished pages instead of redownloading.
+        candidates = [dest, *(dest.with_suffix(ext) for ext in IMAGE_EXTS if ext != dest.suffix)]
         tmp = dest.with_suffix(dest.suffix + ".part")
         last_exc: Exception | None = None
         for attempt in range(MAX_IMAGE_ATTEMPTS):
@@ -401,7 +468,7 @@ def make_downloader(
             delay = 0.0
             started = time.perf_counter()
             try:
-                if await _plausible_download(dest) or (jpg_sibling != dest and await _plausible_download(jpg_sibling)):
+                if await _any_plausible(candidates):
                     ok = True
                 else:
                     async with client.stream("GET", url, timeout=120) as resp:
@@ -410,8 +477,13 @@ def make_downloader(
                         with tmp.open("wb") as out:
                             async for chunk in resp.aiter_bytes(64 * 1024):
                                 out.write(chunk)
-                    if await _plausible_download(tmp):
-                        tmp.replace(dest)
+                    fmt = await _image_format(tmp)
+                    if fmt is not None:
+                        final = dest.with_suffix(_suffix_for(fmt, dest.suffix))
+                        tmp.replace(final)
+                        for stale in candidates:  # none passed the check above: leftovers of a broken earlier try
+                            if stale != final:
+                                stale.unlink(missing_ok=True)
                         ok = True
                     else:
                         last_exc = ValueError("downloaded file failed its integrity check")
@@ -493,8 +565,7 @@ def make_downloader(
             folder.mkdir(parents=True, exist_ok=True)
 
             def dest_for(idx: int) -> Path:
-                ext = Path(urlparse(image_urls[idx - 1]).path).suffix.lower() or ".jpg"
-                return folder / f"{idx:04d}{ext}"
+                return folder / f"{idx:04d}{page_suffix(image_urls[idx - 1])}"
 
             async def attempt_one(idx: int) -> bool:
                 return await download_image(client, image_urls[idx - 1], dest_for(idx), image_sem)
@@ -526,6 +597,29 @@ def make_downloader(
                 )
             return ChapterResult(folder_name, chapter_url, ok=ok_count, total=len(image_urls), complete=complete)
 
+    def _one_url_per_folder(chapter_urls: list[str]) -> list[str]:
+        """The chapter URLs without those whose folder an earlier one already claims.
+
+        Two listing entries that name the same folder (the same chapter
+        linked twice under different URLs, or two chapters a site gives one
+        number) would otherwise download into one folder at once, writing
+        and replacing each other's pages and leaving a mix of both.
+        """
+        claimed: dict[str, str] = {}
+        kept: list[str] = []
+        for url in chapter_urls:
+            try:
+                folder = clean_name(chapter_folder_name(url))
+            except Exception:  # noqa: BLE001 - download_chapter reports it as that chapter's failure
+                kept.append(url)
+                continue
+            if folder in claimed:
+                cwarning(f"  skipped {url}: its folder {folder} is already {claimed[folder]}'s")
+                continue
+            claimed[folder] = url
+            kept.append(url)
+        return kept
+
     async def download_series(
         client: httpx.AsyncClient,
         chapter_urls: list[str],
@@ -541,7 +635,7 @@ def make_downloader(
         gathered = await asyncio.gather(
             *(
                 download_chapter(client, url, out_dir, chapter_sem, image_sem, manifest, dry_run)
-                for url in chapter_urls
+                for url in _one_url_per_folder(chapter_urls)
             ),
             return_exceptions=True,
         )

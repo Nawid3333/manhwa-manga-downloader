@@ -80,15 +80,39 @@ def _extract_label(url: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _parse_cookie_header(cookie: str) -> list[SetCookieParam]:
-    cookies: list[SetCookieParam] = []
+COOKIE_DOMAIN = ".mangago.me"
+
+
+def _cookie_pairs(cookie: str) -> list[tuple[str, str]]:
+    """(name, value) pairs of a `Cookie:` header value such as MANGAGO_COOKIE."""
+    pairs: list[tuple[str, str]] = []
     for part in cookie.split(";"):
         part = part.strip()
         if not part or "=" not in part:
             continue
         name, _, value = part.partition("=")
-        cookies.append({"name": name.strip(), "value": value.strip(), "domain": ".mangago.me", "path": "/"})
-    return cookies
+        pairs.append((name.strip(), value.strip()))
+    return pairs
+
+
+def _parse_cookie_header(cookie: str) -> list[SetCookieParam]:
+    return [
+        {"name": name, "value": value, "domain": COOKIE_DOMAIN, "path": "/"} for name, value in _cookie_pairs(cookie)
+    ]
+
+
+def _session_cookies(cookie: str) -> httpx.Cookies:
+    """The logged-in session as a cookie jar scoped to mangago.me.
+
+    A plain `Cookie` header on the client would go with every request it
+    makes, including each image fetched from the third-party CDN
+    (mangapicgallery.com), handing that host the account's session. The jar
+    only sends it to mangago.me and its subdomains.
+    """
+    jar = httpx.Cookies()
+    for name, value in _cookie_pairs(cookie):
+        jar.set(name, value, domain=COOKIE_DOMAIN, path="/")
+    return jar
 
 
 class MangagoDriver(SiteDriver):
@@ -106,11 +130,6 @@ class MangagoDriver(SiteDriver):
     def base_url(self) -> str:
         return BASE
 
-    @property
-    def extra_headers(self) -> dict[str, str] | None:
-        cookie = os.environ.get("MANGAGO_COOKIE")
-        return {"Cookie": cookie} if cookie else None
-
     def client(self, **kwargs) -> httpx.AsyncClient:
         if find_spec("playwright") is None:
             raise RuntimeError(
@@ -118,7 +137,8 @@ class MangagoDriver(SiteDriver):
                 '`pip install -e ".[mangago]"`, then `playwright install firefox` '
                 '(see README.md "Why mangago needs an account").'
             )
-        if not os.environ.get("MANGAGO_COOKIE"):
+        cookie = os.environ.get("MANGAGO_COOKIE")
+        if not cookie:
             raise RuntimeError(
                 "MANGAGO_COOKIE is not set -- run `python -m tests.mangago_login` first "
                 '(see README.md "Why mangago needs an account").'
@@ -130,6 +150,7 @@ class MangagoDriver(SiteDriver):
         # (see tests/mangago_login.py), just satisfied here by turning HTTP/2
         # off instead of needing a full browser.
         kwargs.setdefault("http2", False)
+        kwargs.setdefault("cookies", _session_cookies(cookie))
         return super().client(**kwargs)
 
     # ---- URL handling -------------------------------------------------------

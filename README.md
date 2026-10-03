@@ -69,7 +69,8 @@ image, read the 5 characters, and write them to
 `data/.mangago_captcha_answer.txt` (plain text, nothing else). The waiting
 script picks that up, fills the field, submits, confirms the login, and
 saves the session to `MANGAGO_COOKIE` in `.env` — that's what the driver
-actually sends on every request afterward. Re-running the script first
+actually sends to mangago.me afterward (only to mangago.me itself, never to
+the image CDN the pages are fetched from). Re-running the script first
 checks whether that saved session is still valid and does nothing if so,
 so this is only needed again once it actually expires.
 
@@ -148,7 +149,8 @@ The object is a versioned contract (OmniScan's `omniscan import --from-url`
 reads it):
 
 ```json
-{"schema": 1, "site": "mangadex", "out_dir": "downloads/mangadex/<id>",
+{"schema": 1, "site": "mangadex", "series": "<id>",
+ "out_dir": "downloads/mangadex/<id>",
  "chapters": 2, "images": 41, "failed_chapters": 0,
  "complete_chapters": ["num1_Chapter 1", "num2_Chapter 2"],
  "incomplete_chapters": ["num3_Chapter 3"]}
@@ -159,6 +161,11 @@ reads it):
   should refuse a `schema` it does not know rather than guess.
 - `site`, `out_dir` -- the driver key and the folder the run wrote to
   (`null` when the run failed before it got that far).
+- `series` -- the series folder name the driver gives this URL (the
+  `<series>` of `downloads/<site>/<series>`, even when `--out` put the files
+  elsewhere); `null` when the URL does not name its series. Some sites give
+  an id here rather than a title (wfwf504's numeric toon id, MangaDex's
+  UUID).
 - `chapters`, `images` -- chapters that finished and images now on disk.
 - `failed_chapters` -- chapters that failed outright (an unexpected error
   while reading the chapter page).
@@ -192,6 +199,12 @@ check:
   though the site's listing still points at the original (e.g. `.webp`)
   URL — otherwise every re-run of an already-converted series would
   silently redownload everything.
+- Every page is saved under the extension of its real format, read from
+  the decoded file rather than from its URL: a page served from a script
+  URL (`image.php?id=3`), from a URL without a suffix, or as WebP from a
+  `.jpg` URL still ends up as `0001.png` / `0001.jpg` / `0001.webp`, so the
+  JPEG conversion and OmniScan's importer recognize it. Resume looks for a
+  page under every image extension for the same reason.
 - A completed chapter's image count is recorded in
   `chapter_manifest.json` inside the output directory. On a later run, if a
   chapter's folder on disk still matches that count (verified with the same
