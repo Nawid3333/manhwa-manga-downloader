@@ -138,8 +138,10 @@ python main.py <URL> [--chapters RANGE] [--out DIR] [--yes] [--json] [--no-conve
 
 Exit code: `0` when every requested chapter completed, `2` when some
 chapters stayed incomplete after all retries (see Reliability below), `1`
-on an error (bad URL, unsupported site, empty listing, network failure, or
-a command-line usage error), `130` when the run was interrupted (Ctrl+C).
+on an error (bad URL, unsupported site, empty listing, network failure, a
+command-line usage error, or bookkeeping files that could not be updated
+because another program kept them open), `130` when the run was
+interrupted (Ctrl+C).
 
 ```pwsh
 python main.py https://mangadex.org/title/<uuid>/some-title --chapters 1-5 --yes --json
@@ -174,6 +176,10 @@ reads it):
 - `complete_chapters`, `incomplete_chapters` -- the chapter folder names
   (inside `out_dir`) that finished, and those still missing pages.
 - `error` -- present only when the run failed; a message for a person.
+  When the pages were downloaded but `chapter_manifest.json` or
+  `incomplete_chapters.json` could not be updated, the counts above are
+  still filled in; the bookkeeping may be stale until the same download
+  runs again.
 
 Only stdout carries the object: nothing is printed there before it, not
 even a site module that fails to load at startup (that warning goes to

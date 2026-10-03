@@ -219,6 +219,36 @@ def test_series_listing_is_fetched_once_per_run(cli, tmp_path: Path, monkeypatch
     assert fetched == ["https://fake.test/series"]
 
 
+def test_a_locked_bookkeeping_file_exits_1_but_keeps_the_result(
+    cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    """Windows: chapter_manifest.json held open by another program. The pages are on disk, so the
+    result and the JPEG pass are kept, but the run must not read as a success."""
+    import src.common as common
+
+    def locked(out_dir: Path, results: list) -> None:
+        raise PermissionError(32, "being used by another process")
+
+    monkeypatch.setattr(common, "_write_manifest", locked)
+    buf = io.BytesIO()
+    Image.effect_noise((48, 48), 40).convert("RGB").save(buf, format="PNG")
+    png = buf.getvalue()
+    out_dir = tmp_path / "out"
+
+    code, out = cli(
+        ["https://fake.test/series", "--chapters", "2", "--out", str(out_dir), "-y", "--json"],
+        handler=lambda r: httpx.Response(200, content=png),
+        capsys=capsys,
+    )
+
+    assert code == 1
+    result = json.loads(out.out)
+    assert result["complete_chapters"] == ["ch2"] and result["images"] == 1
+    assert "bookkeeping files could not be updated" in result["error"]
+    assert "bookkeeping_error" not in result
+    assert [p.name for p in (out_dir / "ch2").iterdir()] == ["0001.jpg"]
+
+
 def test_chapters_selects_by_number_not_by_position(cli, tmp_path: Path, capsys):
     """A listing of 4 chapters numbered 0, 1, 150, 151: '150-151' and '0' must reach them."""
     out_dir = tmp_path / "out"

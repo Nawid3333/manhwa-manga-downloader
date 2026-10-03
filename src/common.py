@@ -306,6 +306,28 @@ class ChapterResult:
     complete: bool
 
 
+# Windows refuses to replace or delete a file that another process holds open
+# without delete sharing (Python's own open(), many editors, an antivirus
+# scan): PermissionError, WinError 5 or 32. Such a hold is usually brief, so
+# the bookkeeping writes wait it out for about 1.5 s before giving up.
+_LOCKED_FILE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
+
+
+def _retry_if_locked(action: Callable[[], object]) -> None:
+    """Run `action`, retrying while the file it replaces or deletes is held open elsewhere.
+
+    Blocks with time.sleep: it only runs once every chapter of the run has
+    finished, so there is nothing on the event loop left to hold up.
+    """
+    for delay in _LOCKED_FILE_RETRY_DELAYS:
+        try:
+            action()
+            return
+        except PermissionError:
+            time.sleep(delay)
+    action()
+
+
 def _write_json_atomic(path: Path, data: object) -> None:
     """Write `data` as JSON to `path` through a temp file and a rename.
 
@@ -317,7 +339,7 @@ def _write_json_atomic(path: Path, data: object) -> None:
     tmp = path.with_name(path.name + ".tmp")
     try:
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        _retry_if_locked(lambda: tmp.replace(path))
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
@@ -358,7 +380,7 @@ def _write_incomplete_report(out_dir: Path, results: list[ChapterResult]) -> Non
     if entries:
         _write_json_atomic(path, {"chapters": sorted(entries.values(), key=lambda e: e["folder"])})
     elif path.exists():
-        path.unlink()
+        _retry_if_locked(path.unlink)
 
 
 def _load_manifest(out_dir: Path) -> dict[str, int]:
@@ -400,7 +422,7 @@ def _write_manifest(out_dir: Path, results: list[ChapterResult]) -> None:
     if entries:
         _write_json_atomic(path, {"chapters": dict(sorted(entries.items()))})
     elif path.exists():
-        path.unlink()
+        _retry_if_locked(path.unlink)
 
 
 async def _verify_folder_matches_manifest(folder: Path, expected_count: int) -> bool:
@@ -656,16 +678,26 @@ def make_downloader(
             else:
                 incomplete.append(result)
 
+        bookkeeping_errors: list[str] = []
         if not dry_run:
-            _write_incomplete_report(out_dir, results)
-            _write_manifest(out_dir, results)
+            for write in (_write_incomplete_report, _write_manifest):
+                try:
+                    write(out_dir, results)
+                except OSError as exc:
+                    # Every page is on disk by now: a bookkeeping file that stays
+                    # locked must not throw away the run's result with it.
+                    cwarning(f"Could not update the bookkeeping in {out_dir}: {exc}")
+                    bookkeeping_errors.append(str(exc))
 
-        return {
+        stats: dict[str, Any] = {
             "chapters": complete_chapters,
             "images": total_ok_images,
             "failed_chapters": failures,
             "complete_chapters": [r.folder for r in results if r.complete],
             "incomplete_chapters": [r.folder for r in incomplete],
         }
+        if bookkeeping_errors:
+            stats["bookkeeping_error"] = "; ".join(bookkeeping_errors)
+        return stats
 
     return download_series
