@@ -112,6 +112,11 @@ isolated by testing the identical request over HTTP/1.1, which works fine —
 so the driver's client forces HTTP/1.1 rather than needing a browser there
 too.
 
+Only rows of mangago's chapter table that carry a `Ch.` number are listed.
+Side stories, specials and notices (`side.30`, `Special.89.5`, `notice.`)
+have their own numbering, which would collide with the main chapters'
+folders, so they are left out; the run names the rows it left out.
+
 ## MangaDex
 
 The `mangadex` driver uses the official API (`api.mangadex.org`), not the
