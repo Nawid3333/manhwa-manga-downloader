@@ -11,7 +11,7 @@ run.
 | ---------- | ----------------------------- | ------------------------------------------------------------ |
 | `mgread`   | mgread.io                     | paginated series listing, reader scraping                    |
 | `nelomanga`| nelomanga.net (MangaNelo)     | JSON chapter API + CDN URL pattern                           |
-| `wfwf504`  | wfwf504.com (늑대닷컴)         | list pages, pagination, per-chapter folders                  |
+| `wfwf504`  | wfwf510.com (늑대닷컴)         | any `wfwf<N>.com` address the site moves to; list pages, pagination |
 | `mangago`  | mangago.me                    | needs a logged-in session, see below                         |
 | `mangadex` | mangadex.org                  | official API; languages via `MANGADEX_LANGS`, see below      |
 | `madara`   | any Madara (WordPress theme) site | detected from the page, no fixed domains; covers hundreds of sites |

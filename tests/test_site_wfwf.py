@@ -1,4 +1,4 @@
-"""Tests for the wfwf504.com driver: URL classification, list/pagination/image
+"""Tests for the wfwf (늑대닷컴) driver: numbered domains, URL classification, list/pagination/image
 parsing (query-string chapter numbers, #vimg-area image containers) -- via
 httpx.MockTransport."""
 
@@ -135,3 +135,48 @@ async def test_list_chapters_fetches_each_list_page_once(mock_client):
 
     assert [num for _, num in chapters] == [1.0, 2.0]
     assert sorted(fetched) == ["1", "2"]
+
+
+# ---- numbered addresses: the site moves from wfwf<N>.com to wfwf<N+k>.com ----
+
+
+@pytest.mark.parametrize("host", ["wfwf504.com", "wfwf510.com", "www.wfwf999.com", "WFWF510.COM"])
+def test_matches_every_numbered_address(host: str):
+    assert driver.matches(f"https://{host}/list?toon=1")
+
+
+@pytest.mark.parametrize("host", ["wfwf.com", "wfwfx.com", "evilwfwf510.com", "wfwf510.com.example"])
+def test_does_not_match_lookalikes(host: str):
+    assert not driver.matches(f"https://{host}/list?toon=1")
+
+
+async def test_list_chapters_stays_on_the_address_it_was_given(mock_client):
+    page = '<div class="list-sec"><a class="ep-item" href="/view?toon=7&num=1">1</a></div>'
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.host)
+        return httpx.Response(200, text=page)
+
+    async with mock_client(handler) as client:
+        chapters = await driver.list_chapters(client, "https://wfwf777.com/list?toon=7")
+
+    assert requested == ["wfwf777.com"]
+    assert chapters == [("https://wfwf777.com/view?toon=7&num=1", 1.0)]
+    assert driver.referer_for("https://wfwf777.com/view?toon=7&num=1") == "https://wfwf777.com/"
+
+
+MOVED_NOTICE = """
+<div class="card"><div class="title">늑대닷컴 접속 주소 안내</div>
+<a href="https://wfwf510.com" class="main-btn">새로운 주소로 이동</a></div>
+"""
+
+
+@pytest.mark.parametrize("url", ["https://wfwf504.com/list?toon=7", "https://wfwf504.com/view?toon=7&num=1"])
+async def test_an_old_address_names_the_new_one(mock_client, url: str):
+    async with mock_client(lambda r: httpx.Response(200, text=MOVED_NOTICE)) as client:
+        with pytest.raises(RuntimeError, match=r"wfwf504\.com has moved to https://wfwf510\.com"):
+            if driver.classify(url) == "list":
+                await driver.list_chapters(client, url)
+            else:
+                await driver.image_urls(client, url)
