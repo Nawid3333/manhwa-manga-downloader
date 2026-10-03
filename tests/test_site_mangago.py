@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import httpx
@@ -123,3 +124,37 @@ async def test_session_cookie_goes_to_mangago_only_never_to_the_image_cdn(monkey
 
     assert sent["www.mangago.me"] == "PHPSESSID=secret; other=1"
     assert sent["iweb_3.mangapicgallery.com"] is None
+
+
+async def test_a_browser_that_will_not_start_does_not_leak_its_playwright_driver(monkeypatch: pytest.MonkeyPatch):
+    """`playwright install firefox` never run: each chapter's attempt must stop the driver it started."""
+    calls = {"start": 0, "stop": 0}
+
+    class FakePlaywright:
+        def __init__(self) -> None:
+            self.firefox = self
+
+        async def launch(self, **kwargs):
+            raise RuntimeError("Executable doesn't exist at ~/.cache/ms-playwright/firefox")
+
+        async def stop(self) -> None:
+            calls["stop"] += 1
+
+    class Starter:
+        async def start(self) -> FakePlaywright:
+            calls["start"] += 1
+            return FakePlaywright()
+
+    fake_api = types.ModuleType("playwright.async_api")
+    fake_api.async_playwright = Starter  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_api)
+    monkeypatch.setenv("MANGAGO_COOKIE", "PHPSESSID=x")
+    fresh = MangagoDriver()
+
+    for _ in range(2):  # two chapters, each trying to start the browser
+        with pytest.raises(RuntimeError, match="Executable doesn't exist"):
+            await fresh._ensure_context()
+
+    assert calls == {"start": 2, "stop": 2}
+    assert fresh._pw is None and fresh._browser is None and fresh._context is None

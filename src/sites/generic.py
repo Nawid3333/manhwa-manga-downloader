@@ -48,6 +48,8 @@ _JUNK_RE = re.compile(
     re.I,
 )
 _SCRIPT_URL_RE = re.compile(r"(?:https?:)?//[^\"'\s<>\\)]+?\.(?:jpe?g|png|webp|avif|bmp)(?:\?[^\"'\s<>\\)]*)?", re.I)
+# Separators a series slug is written with in URLs: the-icon, the_icon, the%20icon, the+icon.
+_SLUG_SEP_RE = re.compile(r"(?:[-_ +.]|%20)+")
 _IMG_ATTRS = ("data-src", "data-lazy-src", "data-original")
 _SKIP_HREF_PREFIXES = ("#", "javascript:", "mailto:", "tel:")
 # Path tails that name a listing rather than the series itself.
@@ -85,9 +87,39 @@ def _dedupe(urls: Iterable[str]) -> list[str]:
     return out
 
 
-def is_junk_image(url: str) -> bool:
-    """True for URLs that are plainly not chapter pages (logos, icons, data: URIs, ...)."""
-    return url.startswith("data:") or _JUNK_RE.search(url) is not None
+def series_slug_of(url: str) -> str:
+    """Last meaningful path segment of a series or chapter URL, with any chapter tail stripped off first."""
+    path = unquote(urlparse(url).path)
+    m = _CHAPTER_WORD_RE.search(path)
+    if m:
+        path = path[: m.start()]
+    else:
+        m = _trailing_chapter(path)
+        if m:
+            path = path[: m.start(2)]
+    segments = [s for s in path.split("/") if s]
+    while len(segments) > 1 and segments[-1].lower() in _LISTING_WORDS:
+        segments.pop()
+    if not segments:
+        return _host(url) or "series"
+    return re.sub(r"\.html?$", "", segments[-1], flags=re.I)
+
+
+def is_junk_image(url: str, series_slug: str = "") -> bool:
+    """True for URLs that are plainly not chapter pages (logos, icons, data: URIs, ...).
+
+    The series' own slug is taken out of the URL first, in any of its usual
+    spellings (`the-icon`, `The_Icon`, `the%20icon`): a series called
+    "Avatar" or "The Icon" carries that word in every page URL, where it
+    says nothing about the image -- without this, every page was junk.
+    """
+    if url.startswith("data:"):
+        return True
+    words = [w for w in _SLUG_SEP_RE.split(series_slug) if w]
+    if words:
+        spelled = _SLUG_SEP_RE.pattern.join(re.escape(w) for w in words)
+        url = re.sub(rf"(?<![a-z0-9]){spelled}(?![a-z0-9])", "/", url, flags=re.I)
+    return _JUNK_RE.search(url) is not None
 
 
 def largest_srcset_candidate(srcset: str) -> str:
@@ -143,20 +175,7 @@ class GenericDriver(SiteDriver):
 
     def series_slug(self, url: str) -> str:
         """Last meaningful path segment, with any chapter tail stripped off first."""
-        path = unquote(urlparse(url).path)
-        m = _CHAPTER_WORD_RE.search(path)
-        if m:
-            path = path[: m.start()]
-        else:
-            m = _trailing_chapter(path)
-            if m:
-                path = path[: m.start(2)]
-        segments = [s for s in path.split("/") if s]
-        while len(segments) > 1 and segments[-1].lower() in _LISTING_WORDS:
-            segments.pop()
-        if not segments:
-            return _host(url) or "series"
-        return re.sub(r"\.html?$", "", segments[-1], flags=re.I)
+        return series_slug_of(url)
 
     # ---- site specifics ----------------------------------------------------
 
@@ -253,12 +272,13 @@ class GenericDriver(SiteDriver):
         """Image URL groups keyed by shared container, each in document order."""
         groups: dict[Any, list[str]] = {}
         counts: dict[Any, int] = {}
+        slug = series_slug_of(page_url)
         for img in all_of(doc, "//img"):
             raw = cls._image_candidate(img)
             if not raw or raw.startswith("data:"):
                 continue
             url = urljoin(page_url, raw)
-            if is_junk_image(url):
+            if is_junk_image(url, slug):
                 continue
             ancestor = cls._group_ancestor(img, counts)
             groups.setdefault(ancestor, []).append(url)
@@ -268,12 +288,13 @@ class GenericDriver(SiteDriver):
     def script_image_lists(doc, page_url: str) -> list[list[str]]:
         """Image URL lists found in each <script>'s text (JSON-escaped slashes unescaped)."""
         lists: list[list[str]] = []
+        slug = series_slug_of(page_url)
         for script in all_of(doc, "//script"):
             text = (script.text or "").replace("\\/", "/")
             if not text:
                 continue
             urls = [urljoin(page_url, m.group(0)) for m in _SCRIPT_URL_RE.finditer(text)]
-            urls = _dedupe(u for u in urls if not is_junk_image(u))
+            urls = _dedupe(u for u in urls if not is_junk_image(u, slug))
             if urls:
                 lists.append(urls)
         return lists

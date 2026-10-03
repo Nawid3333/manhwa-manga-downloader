@@ -28,6 +28,12 @@ def test_classify_list_url():
     assert driver.classify(LIST_URL) == "list"
 
 
+def test_chapter_url_with_a_trailing_slash_is_the_same_chapter():
+    assert driver.classify(CHAPTER_URL + "/") == "chapter"
+    assert driver.cdn_label(CHAPTER_URL + "/") == "37"
+    assert driver.folder_name(CHAPTER_URL + "/") == driver.folder_name(CHAPTER_URL)
+
+
 def test_classify_unknown_url():
     assert driver.classify("https://www.nelomanga.net/search?q=x") == "unknown"
 
@@ -232,3 +238,11 @@ async def test_list_chapters_skips_slugs_without_a_number(mock_client):
     async with mock_client(lambda r: _chapters_page(chapters, has_more=False)) as client:
         result = await driver.list_chapters(client, LIST_URL)
     assert [num for _, num in result] == [1.5, 2.0]
+
+
+async def test_list_chapters_skips_slugs_that_are_not_one_number(mock_client):
+    """chapter-12-1-2 matches the URL pattern but reads as 12.1.2, which is no number: skip it, keep the rest."""
+    chapters = [{"chapter_slug": "chapter-2"}, {"chapter_slug": "chapter-12-1-2"}, {"chapter_slug": "chapter-1"}]
+    async with mock_client(lambda r: _chapters_page(chapters, has_more=False)) as client:
+        result = await driver.list_chapters(client, LIST_URL)
+    assert [num for _, num in result] == [1.0, 2.0]

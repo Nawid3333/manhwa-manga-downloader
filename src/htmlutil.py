@@ -9,8 +9,13 @@ fetch in flight. There is now one parser and one tree type per run.
 
 from __future__ import annotations
 
+import re
+
 import lxml.etree
 import lxml.html
+
+# `<?xml version="1.0" encoding="UTF-8"?>` at the top of an XHTML page.
+_XML_DECLARATION_RE = re.compile(r"^<\?xml[^>]*\?>")
 
 
 def has_class(name: str) -> str:
@@ -28,9 +33,16 @@ def parse_html(html: str):
 
     Callers rely on getting None (not an exception) for blank bodies, the
     same contract trakGrab's parse_tracks uses for its pagination feeds.
+
+    An XML declaration is dropped first: lxml refuses a str that declares
+    an encoding (ValueError, "Unicode strings with encoding declaration are
+    not supported"), and the text is already decoded, so the declaration
+    has nothing left to say. Without this, an XHTML page breaks every
+    driver that parses it.
     """
     if not html or not html.strip():
         return None
+    html = _XML_DECLARATION_RE.sub("", html, count=1)
     try:
         return lxml.html.fromstring(html)
     except lxml.etree.ParserError:

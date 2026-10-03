@@ -5,12 +5,14 @@ in-test fake driver over httpx.MockTransport, never the network."""
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 from pathlib import Path
 
 import httpx
 import pytest
+from PIL import Image
 
 import config
 import main
@@ -167,6 +169,30 @@ def test_json_run_prints_one_object_on_stdout_and_messages_on_stderr(cli, tmp_pa
     assert (out_dir / "ch2" / "0001.jpg").exists()
 
 
+def test_conversion_only_touches_the_chapters_this_run_wrote(cli, tmp_path: Path, capsys):
+    """`--out` may already hold other images (the user's own, a chapter kept with --no-convert): they stay as-is."""
+    out_dir = tmp_path / "library"
+    own = out_dir / "my_art" / "cover.png"
+    earlier = out_dir / "ch1" / "0001.png"
+    for path in (own, earlier):
+        path.parent.mkdir(parents=True)
+        Image.new("RGB", (8, 8), (10, 20, 30)).save(path, format="PNG")
+    before = {path: path.read_bytes() for path in (own, earlier)}
+    buf = io.BytesIO()
+    Image.effect_noise((48, 48), 40).convert("RGB").save(buf, format="PNG")
+    png = buf.getvalue()
+
+    code, out = cli(
+        ["https://fake.test/series", "--chapters", "2", "--out", str(out_dir), "-y", "--json"],
+        handler=lambda r: httpx.Response(200, content=png),
+        capsys=capsys,
+    )
+
+    assert code == 0 and json.loads(out.out)["complete_chapters"] == ["ch2"]
+    assert [p.name for p in (out_dir / "ch2").iterdir()] == ["0001.jpg"]
+    assert {path: path.read_bytes() for path in before} == before
+
+
 def test_chapters_range_filters_the_listing(cli, tmp_path: Path, capsys):
     out_dir = tmp_path / "out"
     code, out = cli(
@@ -283,6 +309,37 @@ def test_non_json_run_prints_messages_to_stdout_and_no_json(cli, tmp_path: Path,
     assert code == 0
     assert "Done!" in out.out
     assert "{" not in out.out.splitlines()[-1]
+
+
+def test_cinput_reads_end_of_input_as_empty_but_lets_ctrl_c_through(monkeypatch: pytest.MonkeyPatch):
+    def raise_(exc: BaseException):
+        def _input(*args):
+            raise exc
+
+        return _input
+
+    monkeypatch.setattr("builtins.input", raise_(EOFError()))
+    assert term.cinput("? ") == ""
+    monkeypatch.setattr("builtins.input", raise_(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        term.cinput("? ")
+
+
+def test_ctrl_c_at_the_chapter_prompt_aborts_instead_of_selecting_everything(
+    cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    answers = iter(["https://fake.test/series", KeyboardInterrupt()])
+
+    def fake_input(*args) -> str:
+        answer = next(answers, "")  # "" afterwards: Enter at any later prompt
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    code, _ = cli([], capsys=capsys)
+    assert code == main.EXIT_ABORTED
+    assert not (tmp_path / "downloads" / "fake").exists()
 
 
 def test_set_console_stream_routes_rich_and_plain_output(console_reset):

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from src.convert import _is_probable_image, _jpeg_dest, collect_non_jpeg, convert_tree, run_cpu
+from src.convert import _is_probable_image, _jpeg_dest, collect_non_jpeg, convert_folders, convert_tree, run_cpu
 
 JPEG_MAGIC = b"\xff\xd8\xff\xe0"
 
@@ -126,3 +126,18 @@ def test_convert_tree_leaves_only_jpegs_behind(tmp_path: Path):
     assert stats.converted == 2
     remaining_exts = {p.suffix for p in tmp_path.iterdir()}
     assert remaining_exts == {".jpg"}
+
+
+def test_convert_folders_converts_only_the_given_folders(tmp_path: Path):
+    for name in ("ch1", "ch2", "unrelated"):
+        (tmp_path / name).mkdir()
+        _make_png(tmp_path / name / "0001.png")
+    _make_png(tmp_path / "beside.png")
+
+    stats = convert_folders([tmp_path / "ch1", tmp_path / "ch2", tmp_path / "missing"], workers=1, quiet=True)
+
+    assert stats.converted == 2 and stats.failed == 0
+    assert [p.name for p in (tmp_path / "ch1").iterdir()] == ["0001.jpg"]
+    assert [p.name for p in (tmp_path / "ch2").iterdir()] == ["0001.jpg"]
+    assert [p.name for p in (tmp_path / "unrelated").iterdir()] == ["0001.png"]
+    assert (tmp_path / "beside.png").exists()

@@ -117,6 +117,31 @@ def test_junk_filter_uses_word_boundaries():
     assert not is_junk_image("https://x/silicon/001.jpg")
 
 
+def test_junk_filter_ignores_the_series_own_slug():
+    """A series named "Avatar ..." or "The Icon" has that word in every page URL; it says nothing about the image."""
+    slug = "avatar-the-last-airbender"
+    assert not is_junk_image("https://cdn.x/avatar-the-last-airbender/chapter-1/01.jpg", slug)
+    assert not is_junk_image("https://cdn.x/Avatar_The_Last_Airbender/1/01.jpg", slug)
+    assert not is_junk_image("https://cdn.x/avatar%20the%20last%20airbender/1/01.jpg", slug)
+    assert is_junk_image("https://x/images/logo.png", slug)
+    assert is_junk_image("https://cdn.x/avatar-the-last-airbender/thumbs/cover.jpg", slug)
+    # only the slug as a whole token: a short one must not eat letters out of a real junk word
+    assert is_junk_image("https://x/logo.png", "o")
+    assert is_junk_image("https://x/icons/a.png", "on")
+
+
+def test_parse_image_urls_keeps_the_pages_of_a_series_named_like_junk():
+    pages = [f"https://cdn.reader.example/manga/the-icon/1/{i:02d}.jpg" for i in range(1, 4)]
+    html = (
+        '<html><body><img src="/images/logo.png"><div class="reader">'
+        + "".join(f'<img src="{u}">' for u in pages)
+        + "</div></body></html>"
+    )
+    assert driver.parse_image_urls(html, f"{HOST}/manga/the-icon/chapter-1/") == pages
+    script = "<script>var pages = [" + ",".join(f'"{u}"' for u in pages) + "];</script>"
+    assert driver.parse_image_urls(f"<html><body>{script}</body></html>", f"{HOST}/manga/the-icon/chapter-1/") == pages
+
+
 def test_largest_srcset_candidate():
     assert largest_srcset_candidate("a.jpg 480w, b.jpg 1200w, c.jpg 800w") == "b.jpg"
     assert largest_srcset_candidate("a.jpg 1x, b.jpg 2x") == "b.jpg"
