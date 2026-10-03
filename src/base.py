@@ -162,18 +162,27 @@ class SiteDriver:
         out_dir: Path,
         chapters: list[int] | None = None,
         dry_run: bool = False,
+        links: list[tuple[str, float]] | None = None,
     ) -> dict[str, Any]:
-        """Facade used by main.py: fetch chapters, filter, download."""
+        """Facade used by main.py: fetch chapters, filter, download.
+
+        `links` is a listing the caller already has (main.py fetches one with
+        count_chapters() to prompt for a range); it is used as-is instead of
+        fetching every listing page a second time.
+        """
         engine = self._download_engine
         if self.classify(url) == "chapter":
             async with self.client(referer=self.referer_for(url)) as c:
                 return await engine(c, [url], out_dir, dry_run=dry_run)
 
         async with self.client(referer=self.referer_for(url)) as c:
-            links = await self.list_chapters(c, url)
+            fetched = links is None
+            if links is None:
+                links = await self.list_chapters(c, url)
             if not links:
                 raise RuntimeError("No chapters found on the series page.")
-            cinfo(f"Found {len(links)} chapter(s)")
+            if fetched:
+                cinfo(f"Found {len(links)} chapter(s)")
             selected = self.select_chapters(links, chapters)
             if not selected:
                 raise RuntimeError("No chapters matched the requested range.")

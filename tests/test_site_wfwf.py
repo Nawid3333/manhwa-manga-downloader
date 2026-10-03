@@ -111,3 +111,27 @@ async def test_list_chapters_merges_pages_in_site_order(mock_client):
         chapters = await driver.list_chapters(client, LIST_URL)
 
     assert [num for _, num in chapters] == [1.0, 2.0]
+
+
+async def test_list_chapters_fetches_each_list_page_once(mock_client):
+    """Page 1 is fetched for its pagination and must not be fetched again for its chapters."""
+    page1 = """
+    <div class="list-sec"><a class="ep-item" href="/view?toon=123&num=1">Chapter 1</a></div>
+    <div class="pagi-wrap">
+      <a class="pg-btn" href="/list?toon=123&pg=1">1</a>
+      <a class="pg-btn" href="/list?toon=123&pg=2">2</a>
+    </div>
+    """
+    page2 = '<div class="list-sec"><a class="ep-item" href="/view?toon=123&num=2">Chapter 2</a></div>'
+    fetched: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = request.url.params["pg"]
+        fetched.append(page)
+        return httpx.Response(200, text=page2 if page == "2" else page1)
+
+    async with mock_client(handler) as client:
+        chapters = await driver.list_chapters(client, LIST_URL)
+
+    assert [num for _, num in chapters] == [1.0, 2.0]
+    assert sorted(fetched) == ["1", "2"]

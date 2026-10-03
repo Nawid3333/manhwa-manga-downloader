@@ -231,6 +231,7 @@ def run(args: argparse.Namespace, *, interactive: bool) -> tuple[int, dict[str, 
         if kind == "chapter":
             cinfo("Chapter URL detected — only this chapter will be downloaded.")
             chapters = None
+            links = None
             target = override or DOWNLOADS_DIR / driver.key / driver.single_chapter_folder()
         elif kind == "list":
             target = override or choose_output_dir(url, driver)
@@ -253,7 +254,8 @@ def run(args: argparse.Namespace, *, interactive: bool) -> tuple[int, dict[str, 
             cinfo("Aborted.")
             return EXIT_OK, _result(site, out_dir, None, None, series)
 
-        stats = asyncio.run(driver.download_series_url(url, target, chapters=chapters))
+        # The listing fetched for the prompt above is reused, not fetched again.
+        stats = asyncio.run(driver.download_series_url(url, target, chapters=chapters, links=links))
         csuccess(f"Done! {stats.get('chapters', 0)} chapter(s), {stats.get('images', 0)} image(s) downloaded.")
         incomplete = stats.get("incomplete_chapters") or []
         if incomplete:
@@ -267,6 +269,16 @@ def run(args: argparse.Namespace, *, interactive: bool) -> tuple[int, dict[str, 
             # that already holds other images, which must not be re-encoded.
             written = [*(stats.get("complete_chapters") or []), *incomplete]
             convert_folders([target / folder for folder in written], quality=JPEG_QUALITY)
+        bookkeeping_error = stats.get("bookkeeping_error")
+        if bookkeeping_error:
+            # incomplete_chapters.json may now be stale, and OmniScan's importer
+            # trusts it: this run must not read as a success.
+            message = (
+                f"Downloaded, but the bookkeeping files could not be updated ({bookkeeping_error}). "
+                "Fix that (on Windows: close whatever has them open) and run the same download again."
+            )
+            cerror(message)
+            return EXIT_ERROR, _result(site, out_dir, stats, message, series)
         code = EXIT_INCOMPLETE if incomplete or stats.get("failed_chapters") else EXIT_OK
         return code, _result(site, out_dir, stats, None, series)
     except RunError as exc:

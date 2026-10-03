@@ -74,7 +74,9 @@ class WfwfDriver(SiteDriver):
                 html = await self.fetch_text(client, self._list_url(slug, sort, p))
                 return self._parse_chapter_links(html)
 
-        results = await asyncio.gather(*(_page(p) for p in pages), return_exceptions=True)
+        # Page 1 is already in hand: only the pages after it are fetched.
+        rest = await asyncio.gather(*(_page(p) for p in pages if p != 1), return_exceptions=True)
+        results = [self._parse_chapter_links(first_html), *rest]
         all_links: list[tuple[str, str]] = []
         seen: set[str] = set()
         for result in results:

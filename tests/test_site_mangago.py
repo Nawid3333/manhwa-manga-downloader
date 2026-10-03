@@ -158,3 +158,21 @@ async def test_a_browser_that_will_not_start_does_not_leak_its_playwright_driver
 
     assert calls == {"start": 2, "stop": 2}
     assert fresh._pw is None and fresh._browser is None and fresh._context is None
+
+
+async def test_download_series_url_passes_a_given_listing_through(tmp_path: Path):
+    """The listing main.py already fetched reaches the base facade: the list page is not requested again."""
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return httpx.Response(500)
+
+    class MockedDriver(MangagoDriver):
+        def client(self, **kwargs) -> httpx.AsyncClient:
+            return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    links = [(LABELED_CHAPTER_URL, 157.0)]
+    with pytest.raises(RuntimeError, match="No chapters matched"):
+        await MockedDriver().download_series_url(LIST_URL, tmp_path, chapters=[1], links=links)
+    assert requested == []

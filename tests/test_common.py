@@ -7,6 +7,7 @@ report -- via httpx.MockTransport, no real network calls."""
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import httpx
@@ -799,3 +800,81 @@ async def test_a_broken_leftover_under_another_extension_is_replaced(tmp_path: P
     )
 
     assert sorted(p.name for p in (tmp_path / "ch1").iterdir()) == ["0001.png"]
+
+
+# ---- bookkeeping files held open by another program (Windows) ---------------
+
+
+def test_bookkeeping_write_waits_out_a_brief_lock(tmp_path: Path):
+    """On Windows a reader without delete sharing (Python's open(), an editor, an
+    antivirus scan) blocks replacing the file until it lets go; on Linux this is a no-op."""
+    path = tmp_path / "chapter_manifest.json"
+    path.write_text("{}", encoding="utf-8")
+    held = path.open(encoding="utf-8")
+    release = threading.Timer(0.1, held.close)
+    release.start()
+    try:
+        common._write_json_atomic(path, {"chapters": {"num1_Chapter 1": 3}})
+    finally:
+        release.cancel()
+        held.close()
+    assert json.loads(path.read_text(encoding="utf-8")) == {"chapters": {"num1_Chapter 1": 3}}
+
+
+def test_bookkeeping_write_retries_while_the_file_is_locked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(common, "_LOCKED_FILE_RETRY_DELAYS", (0, 0, 0))
+    real_replace = Path.replace
+    locked = [PermissionError(13, "locked"), PermissionError(13, "locked")]
+
+    def replace(self: Path, target: Path) -> Path:
+        if locked:
+            raise locked.pop()
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    path = tmp_path / "chapter_manifest.json"
+    common._write_json_atomic(path, {"chapters": {}})
+    assert json.loads(path.read_text(encoding="utf-8")) == {"chapters": {}}
+
+
+def test_bookkeeping_write_gives_up_on_a_lasting_lock_and_keeps_the_old_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(common, "_LOCKED_FILE_RETRY_DELAYS", (0, 0))
+    attempts: list[Path] = []
+
+    def replace(self: Path, target: Path) -> Path:
+        attempts.append(target)
+        raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+
+    monkeypatch.setattr(Path, "replace", replace)
+    path = tmp_path / "incomplete_chapters.json"
+    path.write_text('{"chapters": []}', encoding="utf-8")
+    with pytest.raises(PermissionError):
+        common._write_json_atomic(path, {"chapters": [{"folder": "x"}]})
+    assert len(attempts) == 3
+    assert path.read_text(encoding="utf-8") == '{"chapters": []}'
+    assert not (tmp_path / "incomplete_chapters.json.tmp").exists()
+
+
+async def test_a_bookkeeping_file_that_stays_locked_does_not_lose_the_run(
+    tmp_path: Path, mock_client, jpeg_bytes: bytes, monkeypatch: pytest.MonkeyPatch
+):
+    def locked(out_dir: Path, results: list[common.ChapterResult]) -> None:
+        raise PermissionError(32, "being used by another process")
+
+    monkeypatch.setattr(common, "_write_manifest", locked)
+
+    async def fetch(_client: httpx.AsyncClient, chapter_url: str) -> list[str]:
+        return [f"{chapter_url}/0.jpg"]
+
+    downloader = common.make_downloader(
+        site_label="fake",
+        fetch_image_urls=fetch,
+        chapter_folder_name=lambda url: url.rsplit("/", 1)[-1],
+    )
+    async with mock_client(lambda r: httpx.Response(200, content=jpeg_bytes)) as client:
+        stats = await downloader(client, ["https://fake.test/good"], tmp_path)
+
+    assert stats["complete_chapters"] == ["good"] and stats["images"] == 1
+    assert "being used by another process" in stats["bookkeeping_error"]

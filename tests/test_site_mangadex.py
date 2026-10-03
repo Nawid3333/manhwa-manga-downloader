@@ -182,3 +182,29 @@ async def test_list_chapters_skips_external_and_empty_uploads(mock_client):
         chapters = await driver.list_chapters(client, LIST_URL)
 
     assert chapters == [(f"{SITE}/chapter/{CH1}", 1.0), (f"{SITE}/chapter/{ch3_hosted}", 3.0)]
+
+
+async def test_series_download_reuses_a_given_listing_instead_of_paging_the_feed(tmp_path: Path, jpeg_bytes: bytes):
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        seen.append(url)
+        if url == f"{API}/at-home/server/{CH1}":
+            return httpx.Response(
+                200, json={"baseUrl": "https://node.test", "chapter": {"hash": "h", "data": ["a.jpg"]}}
+            )
+        if url == "https://node.test/data/h/a.jpg":
+            return httpx.Response(200, content=jpeg_bytes)
+        return httpx.Response(404)
+
+    class MockedDriver(MangaDexDriver):
+        def client(self, **kwargs) -> httpx.AsyncClient:
+            return httpx.AsyncClient(transport=httpx.MockTransport(handler), headers=self.extra_headers)
+
+    driver = MockedDriver()
+    driver._numbers[CH1] = 1.0  # what the listing main.py fetched would have recorded
+    stats = await driver.download_series_url(LIST_URL, tmp_path, links=[(f"{SITE}/chapter/{CH1}", 1.0)])
+
+    assert stats["complete_chapters"] == ["num1_Chapter 1"]
+    assert not any("/feed" in url for url in seen)
