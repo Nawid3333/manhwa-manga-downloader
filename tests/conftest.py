@@ -52,8 +52,8 @@ def jpeg_bytes() -> bytes:
     src/common.py now verifies downloads with a real Image.load(), not just
     a magic-byte sniff, so tests that want a download to be accepted need a
     real image -- a bare magic-byte prefix is exactly the case that check is
-    meant to reject. Noise (not a solid fill) keeps the encoded size safely
-    past _MIN_IMAGE_BYTES.
+    meant to reject. 48x48 clears _MIN_PAGE_SIDE, the size below which a
+    decoded image counts as a placeholder rather than a page.
     """
     buf = io.BytesIO()
     Image.effect_noise((48, 48), 40).convert("RGB").save(buf, format="JPEG", quality=80)

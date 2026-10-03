@@ -116,6 +116,63 @@ async def test_plausible_download_valid_jpeg(tmp_path: Path, jpeg_bytes: bytes):
     assert await common._plausible_download(path) is True
 
 
+def _blank(size: tuple[int, int], fmt: str, **save_kwargs: object) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, (255, 255, 255)).save(buf, format=fmt, **save_kwargs)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("size", "fmt", "save_kwargs"),
+    [
+        ((720, 2000), "WEBP", {"lossless": True}),  # a blank full webtoon page: ~100 bytes
+        ((800, 100), "WEBP", {}),  # a spacer panel
+        ((800, 100), "GIF", {}),
+        ((720, 7), "WEBP", {"lossless": True}),  # the remainder slice of a strip cut into fixed heights
+    ],
+)
+async def test_plausible_download_accepts_a_tiny_but_real_page(
+    tmp_path: Path, size: tuple[int, int], fmt: str, save_kwargs: dict
+):
+    """Blank pages encode to a few dozen bytes; refusing them left their chapter incomplete forever (#12)."""
+    path = tmp_path / "page.img"
+    path.write_bytes(_blank(size, fmt, **save_kwargs))
+    assert path.stat().st_size < 512
+    assert await common._plausible_download(path) is True
+
+
+@pytest.mark.parametrize(
+    ("size", "fmt"),
+    [((1, 1), "GIF"), ((1, 1), "PNG"), ((2, 2), "WEBP"), ((15, 15), "PNG")],
+)
+async def test_plausible_download_refuses_a_placeholder_pixel(tmp_path: Path, size: tuple[int, int], fmt: str):
+    path = tmp_path / "pixel.img"
+    path.write_bytes(_blank(size, fmt))
+    assert await common._plausible_download(path) is False
+
+
+async def test_a_chapter_with_a_tiny_blank_page_completes(tmp_path: Path, mock_client, jpeg_bytes: bytes):
+    blank = _blank((720, 2000), "WEBP", lossless=True)
+    downloader = common.make_downloader(
+        site_label="fake",
+        fetch_image_urls=_make_fetch(2, ext=".webp"),
+        chapter_folder_name=lambda url: url.rsplit("/", 1)[-1],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=blank if request.url.path.endswith("/1.webp") else jpeg_bytes)
+
+    async with mock_client(handler) as client:
+        stats = await downloader(client, ["https://fake.test/ch1"], tmp_path)
+
+    assert stats["complete_chapters"] == ["ch1"] and stats["incomplete_chapters"] == []
+    assert sorted(p.name for p in (tmp_path / "ch1").iterdir()) == ["0001.jpg", "0002.webp"]
+
+
 # ---- AdaptiveLimiter: AIMD concurrency control ------------------------------
 
 

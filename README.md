@@ -200,7 +200,10 @@ check:
 - Every downloaded file is verified with a full image decode (Pillow
   `Image.load()`, run off the event loop) before it's accepted — a dropped
   HTTP/2 stream or an overloaded CDN serving a truncated "200 OK" is caught
-  and retried instead of being silently kept as a corrupt page. The same
+  and retried instead of being silently kept as a corrupt page. An image
+  under 16 px on both sides (a tracking pixel or a "hotlink blocked"
+  placeholder) is refused too. The file's size in bytes is not a test: a
+  blank page can be under 100 bytes as WebP. The same
   check gates resume: an existing file from a previous run is only trusted
   if it still decodes cleanly. Resume also recognizes a file that was
   already converted to `.jpg` by a previous run's conversion pass, even

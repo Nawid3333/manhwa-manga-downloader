@@ -170,8 +170,17 @@ class AdaptiveLimiter:
             self._condition.notify_all()
 
 
-# Minimum plausible image: magic bytes present and not absurdly small.
-_MIN_IMAGE_BYTES = 512
+# A file shorter than the header sniffed below cannot be an image. Byte size
+# says nothing more than that: a blank 720x2000 page is 102 bytes as lossless
+# WebP (a blank sliver 38), smaller than a 1x1 "hotlink blocked" PNG (69).
+# Placeholders are told apart by their decoded size instead (_MIN_PAGE_SIDE).
+_MIN_IMAGE_BYTES = 16
+# A decoded image is a page only when at least one side reaches this. Tracking
+# pixels and hotlink placeholders (1x1, 2x2) fall below it in both. Requiring
+# it of *both* sides would refuse a real page: a strip cut into fixed-height
+# slices ends in a remainder that can be a few pixels tall, and a refused page
+# leaves its chapter incomplete on every run.
+_MIN_PAGE_SIDE = 16
 _IMAGE_MAGIC = (b"\xff\xd8", b"RIFF", b"\x89PNG", b"GIF8", b"II*\x00", b"MM\x00*", b"BM")
 # AVIF/HEIF start with an `ftyp` box whose 4-byte size varies by encoder (0x18, 0x1c, 0x20, ...).
 _FTYP_AT = slice(4, 8)
@@ -211,7 +220,7 @@ def _suffix_for(fmt: str, expected: str) -> str:
 
 
 def _decoded_format_sync(path: Path) -> str | None:
-    """The image format of `path` when it decodes completely, else None.
+    """The image format of `path` when it decodes completely into a page, else None.
 
     A real decode check, not just a magic-byte sniff: a dropped HTTP/2
     stream or an overloaded CDN can answer a "200 OK" with a body that
@@ -221,11 +230,14 @@ def _decoded_format_sync(path: Path) -> str | None:
     the common shape of a cut-off stream -- raises instead of silently
     succeeding the way the cheaper `.verify()` sometimes does. Pillow's
     default (LOAD_TRUNCATED_IMAGES = False) is what makes that raise; this
-    never overrides it.
+    never overrides it. An image that decodes but is tiny in both directions
+    is a server's placeholder, not a page (see _MIN_PAGE_SIDE).
     """
     try:
         with Image.open(path) as img:
             img.load()
+            if max(img.size) < _MIN_PAGE_SIDE:
+                return None
             return img.format or ""
     except (OSError, UnidentifiedImageError, ValueError):
         return None
