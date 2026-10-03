@@ -85,7 +85,9 @@ class MgreadDriver(SiteDriver):
                 html = await self.fetch_text(client, f"{BASE}/manga/{slug}/chapter/page/{p}/")
                 return self.parse_chapter_links(html)
 
-        results = await asyncio.gather(*(_fetch_page(p) for p in pages), return_exceptions=True)
+        # The series page lists the same chapters as /chapter/page/1/ (checked
+        # against the live site): only the pages after it are fetched.
+        results = await asyncio.gather(*(_fetch_page(p) for p in pages if p != 1), return_exceptions=True)
         chapters: list[tuple[str, float]] = self.parse_chapter_links(first_html)
         for result in results:
             if isinstance(result, BaseException):
