@@ -312,7 +312,7 @@ def main(argv: list[str] | None = None) -> None:
     cprint(banner(), color="cyan", panel=True)
     try:
         log_path = init_file_logging(LOGS_DIR)
-    except OSError as exc:  # e.g. an installed copy whose logs/ is not writable: run without a log file
+    except OSError as exc:  # e.g. an installed copy started in a folder it cannot write to: run without a log file
         cwarning(f"No log file for this run: {exc}")
     else:
         cinfo(f"Logging to {log_path}")

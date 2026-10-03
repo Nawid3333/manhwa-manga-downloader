@@ -30,7 +30,10 @@ non-JPEG image to JPEG after each run.
   edit. `site_for_url()` matches by domain only (no network);
   `resolve_site()` does that first and, when nothing matches, fetches the
   page once with the plain client and offers it to every driver's `sniff()`
-  in descending `priority` — the first claimant wins.
+  in descending `priority` — the first claimant wins. It also picks
+  `DATA_DIR`, home of `downloads/`, `logs/` and `.env`: the source tree
+  when running from one (`is_checkout`), else the current working
+  directory, so an installed copy never writes into `site-packages`.
 - `src/base.py` — `SiteDriver` abstract base class. New drivers subclass it
   and implement: `base_url`, `classify`, `list_chapters`, `image_urls`,
   `folder_name` (plus the URL-classification helpers). `matches()` on the

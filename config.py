@@ -28,13 +28,31 @@ from src.common import client as _plain_client
 from term import log_debug
 
 ROOT_DIR = Path(__file__).resolve().parent
-DOWNLOADS_DIR = ROOT_DIR / "downloads"
-LOGS_DIR = ROOT_DIR / "logs"
+
+
+def is_checkout(root: Path) -> bool:
+    """True when the app runs from its source tree (a clone, or `pip install -e .`).
+
+    An installed copy (a wheel, `pip install .`) lives in site-packages: a
+    folder that is hard to find, vanishes with its venv and is often not
+    writable, and nobody keeps a `.env` there.
+    """
+    if {"site-packages", "dist-packages"} & set(root.parts):
+        return False
+    return (root / "pyproject.toml").is_file()
+
+
+# Where downloads, logs and `.env` live: the source tree when running from
+# one (the setup the README describes, and the downloads/ path OmniScan's
+# docs point at), else the folder `mangadl` was started in.
+DATA_DIR = ROOT_DIR if is_checkout(ROOT_DIR) else Path.cwd()
+DOWNLOADS_DIR = DATA_DIR / "downloads"
+LOGS_DIR = DATA_DIR / "logs"
 
 # Must run before driver discovery below: some drivers (e.g. mangago, which
 # needs a logged-in session cookie) read their own env vars whenever a
 # request is made, so those vars have to already be in os.environ by then.
-load_dotenv(ROOT_DIR / ".env")
+load_dotenv(DATA_DIR / ".env")
 
 # ---- conversion settings ---------------------------------------------------
 # Target format is always JPEG; non-JPEG downloads are converted after a run

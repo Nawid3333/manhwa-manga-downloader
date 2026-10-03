@@ -43,6 +43,14 @@ py -3.11 -m venv .venv
 pip install -r requirements.txt
 ```
 
+Run from this folder (`python main.py`, or `mangadl` after
+`pip install -e .`), downloads go to `downloads\` and logs to `logs\` here,
+and settings are read from `.env` here.
+
+A regular install (`pip install .`, or the wheel attached to each release)
+puts the code in `site-packages`, so `mangadl` uses the folder you start it
+in instead: `downloads\`, `logs\` and `.env` there.
+
 ## Why mangago needs an account
 
 mangago.me only shows a chapter's full page list in one request to a

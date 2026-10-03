@@ -48,3 +48,25 @@ def test_registry_problems_go_to_stderr_not_stdout(monkeypatch: pytest.MonkeyPat
     out = capsys.readouterr()
     assert out.out == ""
     assert "[registry] failed to load site module src.sites.wfwf" in out.err
+
+
+# ---- where downloads, logs and .env live -------------------------------------
+
+
+def test_this_source_tree_is_a_checkout():
+    assert config.is_checkout(config.ROOT_DIR)
+    assert config.DATA_DIR == config.ROOT_DIR
+    assert config.DOWNLOADS_DIR == config.ROOT_DIR / "downloads"
+
+
+@pytest.mark.parametrize("libdir", ["site-packages", "dist-packages"])
+def test_an_installed_copy_is_not_a_checkout(tmp_path, libdir: str):
+    """A stray pyproject.toml in site-packages must not send downloads there (#13)."""
+    installed = tmp_path / "venv" / "lib" / libdir
+    installed.mkdir(parents=True)
+    (installed / "pyproject.toml").write_text("", encoding="utf-8")
+    assert not config.is_checkout(installed)
+
+
+def test_a_folder_without_pyproject_is_not_a_checkout(tmp_path):
+    assert not config.is_checkout(tmp_path)
