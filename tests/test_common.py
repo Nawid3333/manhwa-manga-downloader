@@ -510,7 +510,7 @@ async def test_download_series_counts_unexpected_chapter_error(
         "complete_chapters": [],
         "incomplete_chapters": [],
     }
-    assert errors
+    assert errors == ["Chapter failed: https://fake.test/broken (RuntimeError: boom)"]
 
 
 # ---- incomplete_chapters.json report ----------------------------------------

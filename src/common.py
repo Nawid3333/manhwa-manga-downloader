@@ -632,11 +632,9 @@ def make_downloader(
         out_dir.mkdir(parents=True, exist_ok=True)
         manifest = {} if dry_run else _load_manifest(out_dir)
 
+        urls = _one_url_per_folder(chapter_urls)
         gathered = await asyncio.gather(
-            *(
-                download_chapter(client, url, out_dir, chapter_sem, image_sem, manifest, dry_run)
-                for url in _one_url_per_folder(chapter_urls)
-            ),
+            *(download_chapter(client, url, out_dir, chapter_sem, image_sem, manifest, dry_run) for url in urls),
             return_exceptions=True,
         )
         total_ok_images = 0
@@ -644,9 +642,11 @@ def make_downloader(
         incomplete: list[ChapterResult] = []
         failures = 0
         results: list[ChapterResult] = []
-        for result in gathered:
+        for url, result in zip(urls, gathered, strict=True):
             if isinstance(result, BaseException):
-                cerror(f"Chapter failed: {result}")
+                # Name the chapter: the exception alone ("Expecting value: line 1
+                # column 1", "'data'") does not say which one to look at.
+                cerror(f"Chapter failed: {url} ({type(result).__name__}: {result})")
                 failures += 1
                 continue
             results.append(result)
