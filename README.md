@@ -51,6 +51,20 @@ A regular install (`pip install .`, or the wheel attached to each release)
 puts the code in `site-packages`, so `mangadl` uses the folder you start it
 in instead: `downloads\`, `logs\` and `.env` there.
 
+### Long paths on Windows
+
+Series and chapter folder names can each be up to 180 characters, so a page
+path can pass Windows' default limit of 259 characters. A chapter that
+would cross it fails at once with a message saying so. To lift the limit,
+run once in an administrator PowerShell, then open a new terminal:
+
+```pwsh
+Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem LongPathsEnabled 1
+```
+
+Or pass a shorter `--out`. Programs that read the downloads, such as
+OmniScan, need long paths too to open those files.
+
 ## Why mangago needs an account
 
 mangago.me only shows a chapter's full page list in one request to a

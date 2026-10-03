@@ -7,6 +7,7 @@ report -- via httpx.MockTransport, no real network calls."""
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from pathlib import Path
 
@@ -935,3 +936,47 @@ async def test_a_bookkeeping_file_that_stays_locked_does_not_lose_the_run(
 
     assert stats["complete_chapters"] == ["good"] and stats["images"] == 1
     assert "being used by another process" in stats["bookkeeping_error"]
+
+
+# ---- Windows path length ----------------------------------------------------
+
+
+async def test_a_chapter_whose_pages_would_overrun_max_path_fails_at_once(
+    tmp_path: Path, mock_client, jpeg_bytes: bytes, monkeypatch: pytest.MonkeyPatch
+):
+    """Without long path support every page would fail all its retries; the chapter fails up front instead."""
+    monkeypatch.setattr(common, "_windows_path_limit", lambda: len(str(tmp_path)) + 20)
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        return httpx.Response(200, content=jpeg_bytes)
+
+    downloader = common.make_downloader(
+        site_label="fake", fetch_image_urls=_make_fetch(2), chapter_folder_name=lambda url: "x" * 30
+    )
+    async with mock_client(handler) as client:
+        stats = await downloader(client, ["https://fake.test/ch1"], tmp_path)
+
+    assert stats["failed_chapters"] == 1 and stats["complete_chapters"] == []
+    assert requested == [] and not (tmp_path / ("x" * 30)).exists()
+
+
+async def test_a_path_within_the_limit_downloads_normally(
+    tmp_path: Path, mock_client, jpeg_bytes: bytes, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(common, "_windows_path_limit", lambda: len(str(tmp_path)) + 40)
+    downloader = common.make_downloader(
+        site_label="fake", fetch_image_urls=_make_fetch(1), chapter_folder_name=lambda url: "ch1"
+    )
+    async with mock_client(lambda r: httpx.Response(200, content=jpeg_bytes)) as client:
+        stats = await downloader(client, ["https://fake.test/ch1"], tmp_path)
+
+    assert stats["complete_chapters"] == ["ch1"]
+
+
+def test_no_path_limit_off_windows_or_with_long_paths_on():
+    limit = common._windows_path_limit()
+    assert limit is None or limit == 259
+    if sys.platform != "win32":
+        assert limit is None

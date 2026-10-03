@@ -33,9 +33,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import random
 import re
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -203,6 +205,47 @@ _FORMAT_EXTS: dict[str, tuple[str, ...]] = {
     "BMP": (".bmp",),
     "TIFF": (".tif", ".tiff"),
 }
+
+
+# The longest file name a page goes through: `0001.jpeg.part` (convert.py's
+# `0001.jpg.part` is shorter), plus the separator before it.
+_LONGEST_PAGE_NAME = len("\\0001") + max(len(ext) for ext in IMAGE_EXTS) + len(".part")
+
+
+@functools.cache
+def _windows_path_limit() -> int | None:
+    """The longest path this process can write: 259 on Windows without long path support, else None.
+
+    Long paths are off on a default Windows install (the LongPathsEnabled
+    policy); Python itself is built to use them once that is switched on.
+    """
+    if sys.platform != "win32":
+        return None
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+            enabled, _ = winreg.QueryValueEx(key, "LongPathsEnabled")
+    except OSError:
+        enabled = 0
+    return None if enabled == 1 else 259
+
+
+def _check_path_length(folder: Path) -> None:
+    """Refuse a chapter folder whose pages Windows could not write, before any download starts.
+
+    Unchecked, the folder itself may still fit while every page in it fails
+    on each of its retries and the chapter comes back incomplete on every run.
+    """
+    limit = _windows_path_limit()
+    if limit is None:
+        return
+    length = len(str(folder.absolute())) + _LONGEST_PAGE_NAME
+    if length > limit:
+        raise OSError(
+            f"the paths in {folder} would be {length} characters, over Windows' limit of {limit}: "
+            'turn on long paths (README "Long paths on Windows") or choose a shorter --out'
+        )
 
 
 def page_suffix(url: str) -> str:
@@ -596,6 +639,7 @@ def make_downloader(
 
             cinfo(f"  downloading {folder_name}: {len(image_urls)} images")
             folder = out_dir / folder_name
+            _check_path_length(folder)
             folder.mkdir(parents=True, exist_ok=True)
 
             def dest_for(idx: int) -> Path:
