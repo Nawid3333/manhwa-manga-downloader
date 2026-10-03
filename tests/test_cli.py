@@ -5,12 +5,14 @@ in-test fake driver over httpx.MockTransport, never the network."""
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 from pathlib import Path
 
 import httpx
 import pytest
+from PIL import Image
 
 import config
 import main
@@ -165,6 +167,30 @@ def test_json_run_prints_one_object_on_stdout_and_messages_on_stderr(cli, tmp_pa
     }
     assert "Done!" in out.err
     assert (out_dir / "ch2" / "0001.jpg").exists()
+
+
+def test_conversion_only_touches_the_chapters_this_run_wrote(cli, tmp_path: Path, capsys):
+    """`--out` may already hold other images (the user's own, a chapter kept with --no-convert): they stay as-is."""
+    out_dir = tmp_path / "library"
+    own = out_dir / "my_art" / "cover.png"
+    earlier = out_dir / "ch1" / "0001.png"
+    for path in (own, earlier):
+        path.parent.mkdir(parents=True)
+        Image.new("RGB", (8, 8), (10, 20, 30)).save(path, format="PNG")
+    before = {path: path.read_bytes() for path in (own, earlier)}
+    buf = io.BytesIO()
+    Image.effect_noise((48, 48), 40).convert("RGB").save(buf, format="PNG")
+    png = buf.getvalue()
+
+    code, out = cli(
+        ["https://fake.test/series", "--chapters", "2", "--out", str(out_dir), "-y", "--json"],
+        handler=lambda r: httpx.Response(200, content=png),
+        capsys=capsys,
+    )
+
+    assert code == 0 and json.loads(out.out)["complete_chapters"] == ["ch2"]
+    assert [p.name for p in (out_dir / "ch2").iterdir()] == ["0001.jpg"]
+    assert {path: path.read_bytes() for path in before} == before
 
 
 def test_chapters_range_filters_the_listing(cli, tmp_path: Path, capsys):

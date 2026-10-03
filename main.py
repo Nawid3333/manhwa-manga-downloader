@@ -38,7 +38,7 @@ from config import (
     resolve_site,
 )
 from src.base import SiteDriver
-from src.convert import convert_tree
+from src.convert import convert_folders
 from term import (
     cconfirm,
     cerror,
@@ -263,7 +263,10 @@ def run(args: argparse.Namespace, *, interactive: bool) -> tuple[int, dict[str, 
                 "re-running this same download will retry only what's missing."
             )
         if CONVERT_TO_JPEG and not args.no_convert:
-            convert_tree(target, quality=JPEG_QUALITY)
+            # Only the chapter folders this run wrote: `--out` may be a folder
+            # that already holds other images, which must not be re-encoded.
+            written = [*(stats.get("complete_chapters") or []), *incomplete]
+            convert_folders([target / folder for folder in written], quality=JPEG_QUALITY)
         code = EXIT_INCOMPLETE if incomplete or stats.get("failed_chapters") else EXIT_OK
         return code, _result(site, out_dir, stats, None, series)
     except RunError as exc:

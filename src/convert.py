@@ -1,7 +1,9 @@
 """Post-download image conversion to JPEG.
 
 Target format is always JPEG. After a run, any non-JPEG image (webp/png/...)
-under the output tree is re-encoded in place and the source deleted.
+in the chapter folders that run wrote is re-encoded in place and the source
+deleted. Only those folders: `--out` can point at a directory that already
+holds other files, and nothing outside this run's chapters is touched.
 
 CPU-only by decision (2026-09-22): the workload is codec-bound (decode +
 libjpeg encode), GPUs have no JPEG encoder to offer, and the AMD RX 9070 XT
@@ -16,6 +18,7 @@ extra file size for downloaded manga.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -151,7 +154,18 @@ def convert_tree(
     Deletes sources after successful conversion; the final state of the tree
     is JPEG-only. Files already named .jpg/.jpeg are left untouched.
     """
-    files = collect_non_jpeg(root)
+    return convert_folders([root], quality=quality, workers=workers, quiet=quiet)
+
+
+def convert_folders(
+    folders: Iterable[Path],
+    *,
+    quality: int = JPEG_QUALITY,
+    workers: int | None = None,
+    quiet: bool = False,
+) -> ConvertStats:
+    """convert_tree over several folders at once, in one process pool; a folder that does not exist is skipped."""
+    files = [p for folder in folders for p in collect_non_jpeg(folder)]
     if not files:
         return ConvertStats()
 

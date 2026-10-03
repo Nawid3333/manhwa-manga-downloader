@@ -111,8 +111,10 @@ python main.py
 
 It lists the supported sites, asks for a series list URL (or a single
 chapter URL), shows how many chapters were found, then asks for a range
-(`1-10`, `5`, `1,3,5-7`, or `all`). After the download, non-JPEG images
-under the output tree are converted to JPEG (quality 90) on all CPU cores.
+(`1-10`, `5`, `1,3,5-7`, or `all`). After the download, non-JPEG images in
+the chapter folders that run wrote are converted to JPEG (quality 90) on all
+CPU cores; nothing else under the output directory is touched, so `--out`
+can safely point at a folder that already holds other files.
 
 Output lands in `downloads/<site-key>/<series-slug>/<chapter-folder>/`.
 
