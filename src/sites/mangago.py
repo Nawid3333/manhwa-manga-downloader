@@ -33,6 +33,7 @@ scraper -- and client() says how to install it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 from importlib.util import find_spec
@@ -230,10 +231,22 @@ class MangagoDriver(SiteDriver):
                 from playwright.async_api import async_playwright
 
                 cookie = os.environ["MANGAGO_COOKIE"]  # client() already required this
-                self._pw = await async_playwright().start()
-                self._browser = await self._pw.firefox.launch(headless=True)
-                self._context = await self._browser.new_context()
-                await self._context.add_cookies(_parse_cookie_header(cookie))
+                pw = await async_playwright().start()
+                browser: Browser | None = None
+                try:
+                    browser = await pw.firefox.launch(headless=True)
+                    context = await browser.new_context()
+                    await context.add_cookies(_parse_cookie_header(cookie))
+                except BaseException:
+                    # A browser that will not start (`playwright install firefox`
+                    # never run) must not leave its driver process behind: every
+                    # chapter would otherwise start, and leak, another one.
+                    if browser is not None:
+                        with contextlib.suppress(Exception):
+                            await browser.close()
+                    await pw.stop()
+                    raise
+                self._pw, self._browser, self._context = pw, browser, context
             return self._context
 
     async def _close_browser(self) -> None:
