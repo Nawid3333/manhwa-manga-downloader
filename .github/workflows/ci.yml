@@ -91,3 +91,12 @@ jobs:
 
       - name: Check package metadata
         run: twine check dist/*
+
+      # An installed copy lives in site-packages, so its downloads, logs and
+      # .env must come from the folder it runs in instead (config.DATA_DIR).
+      - name: Installed copy keeps its data out of site-packages
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -m venv wheel-venv
+          wheel-venv/bin/pip install "$GITHUB_WORKSPACE"/dist/*.whl
+          wheel-venv/bin/python -c "import config, pathlib; assert config.DATA_DIR == pathlib.Path.cwd(), config.DATA_DIR"

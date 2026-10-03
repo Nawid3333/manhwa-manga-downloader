@@ -56,17 +56,46 @@ def test_parse_range_bounds_are_chapter_numbers(text: str, first: int, last: int
     assert parse_range(text, last, first) == expected
 
 
-@pytest.mark.parametrize("text", ["abc", "1-", "-3", "3-1", "1,x", "1..3"])
+@pytest.mark.parametrize("text", ["abc", "1-", "-3", "3-1", "1,x", "1..3", "1.2.3", "12.", ".5", "1e3", "nan"])
 def test_parse_range_rejects_garbage(text: str):
     with pytest.raises(ValueError):
         parse_range(text, 10)
 
 
-def test_prompt_range_falls_back_to_all_on_garbage(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(term, "cinput", lambda *a, **k: "nope")
-    assert term.prompt_range(3) == [1, 2, 3]
-    monkeypatch.setattr(term, "cinput", lambda *a, **k: "2,3")
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("12.5", [12]), ("10.5-12", [10, 11, 12]), ("3,12.5", [3, 12]), ("12-12.5", [12])],
+)
+def test_parse_range_takes_a_decimal_as_its_whole_chapter(text: str, expected: list[int]):
+    """select_chapters matches on int(num), so selecting 12 is what takes chapter 12.5."""
+    assert parse_range(text, 20) == expected
+
+
+def _answers(monkeypatch: pytest.MonkeyPatch, *answers: str) -> list[str]:
+    """Feed term.cinput the given answers in order (then end of input); returns the prompts it saw."""
+    queue = iter(answers)
+    prompts: list[str] = []
+
+    def fake_cinput(prompt: str, **kwargs) -> str:
+        prompts.append(prompt)
+        return next(queue, "")
+
+    monkeypatch.setattr(term, "cinput", fake_cinput)
+    return prompts
+
+
+@pytest.mark.parametrize("bad", ["nope", "1-10x", "5,,x", "99"])
+def test_prompt_range_asks_again_instead_of_taking_everything(monkeypatch: pytest.MonkeyPatch, bad: str):
+    prompts = _answers(monkeypatch, bad, "2,3")
     assert term.prompt_range(3) == [2, 3]
+    assert len(prompts) == 2
+
+
+def test_prompt_range_reads_end_of_input_as_all(monkeypatch: pytest.MonkeyPatch):
+    """cinput turns end of input into "": piped stdin ends the loop instead of spinning on it."""
+    prompts = _answers(monkeypatch, "nope")
+    assert term.prompt_range(3) == [1, 2, 3]
+    assert len(prompts) == 2
 
 
 # ---- argument parsing -------------------------------------------------------
@@ -344,6 +373,16 @@ def test_bad_range_and_empty_selection_exit_with_1(cli, tmp_path: Path, capsys):
     assert code == 1 and "No chapters" in json.loads(out.out)["error"]
 
 
+@pytest.mark.parametrize("raw", ["\x03", "https://fake.test/se ries", "https://fake.test/\x00x"])
+def test_resolve_input_refuses_control_characters_and_inner_spaces(raw: str):
+    url, err = main.resolve_input(raw)
+    assert url == "" and err is not None and "does not look like a valid URL" in err
+
+
+def test_resolve_input_adds_a_missing_scheme():
+    assert main.resolve_input("  fake.test/series \n") == ("https://fake.test/series", None)
+
+
 def test_invalid_url_exits_with_1(cli, capsys):
     code, out = cli(["ftp://example/x", "-y", "--json"], capsys=capsys)
     assert code == 1
@@ -371,6 +410,46 @@ def test_cinput_reads_end_of_input_as_empty_but_lets_ctrl_c_through(monkeypatch:
         term.cinput("? ")
 
 
+@pytest.fixture
+def windows_console(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Pretend stdin is a Windows console that has just hit end of input; returns the grace sleeps taken."""
+    slept: list[float] = []
+
+    def eof(*args):
+        raise EOFError
+
+    monkeypatch.setattr(term.sys, "platform", "win32")
+    monkeypatch.setattr(term, "_stdin_is_console", lambda: True)
+    monkeypatch.setattr("builtins.input", eof)
+    monkeypatch.setattr(term.time, "sleep", slept.append)
+    return slept
+
+
+def test_a_windows_ctrl_c_that_ends_input_first_still_aborts(windows_console, monkeypatch: pytest.MonkeyPatch):
+    """CPython can end input() at a Ctrl+C before the KeyboardInterrupt lands; it lands in the grace sleep."""
+
+    def interrupted(seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(term.time, "sleep", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        term.cinput("? ")
+    with pytest.raises(KeyboardInterrupt):
+        term.cconfirm("Start?")
+
+
+def test_real_end_of_input_at_a_windows_console_is_still_an_empty_answer(windows_console):
+    assert term.cinput("? ") == ""
+    assert term.cconfirm("Start?", default=False) is False
+    assert windows_console == [term._CTRL_C_GRACE, term._CTRL_C_GRACE]
+
+
+def test_piped_end_of_input_does_not_wait(windows_console, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(term, "_stdin_is_console", lambda: False)
+    assert term.cinput("? ") == ""
+    assert windows_console == []
+
+
 def test_ctrl_c_at_the_chapter_prompt_aborts_instead_of_selecting_everything(
     cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ):
@@ -385,6 +464,18 @@ def test_ctrl_c_at_the_chapter_prompt_aborts_instead_of_selecting_everything(
     monkeypatch.setattr("builtins.input", fake_input)
     code, _ = cli([], capsys=capsys)
     assert code == main.EXIT_ABORTED
+    assert not (tmp_path / "downloads" / "fake").exists()
+
+
+def test_interactive_typo_is_asked_again_and_the_confirmation_names_the_count(
+    cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    answers = iter(["https://fake.test/series", "1-2x", "2.5", "n"])
+    monkeypatch.setattr("builtins.input", lambda *args: next(answers, ""))
+    code, out = cli([], capsys=capsys, numbers=(1, 2, 2.5, 3))
+    assert code == 0
+    assert "Try again" in out.out
+    assert "Start download of 2 chapter(s)?" in out.out  # 2 and 2.5
     assert not (tmp_path / "downloads" / "fake").exists()
 
 

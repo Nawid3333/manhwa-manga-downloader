@@ -14,6 +14,7 @@ never handed to the generic fallback just because it also looks generic.
 from __future__ import annotations
 
 import importlib
+import os
 import pkgutil
 import sys
 from collections.abc import Awaitable, Callable
@@ -21,20 +22,58 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 from src.base import SiteDriver
 from src.common import client as _plain_client
 from term import log_debug
 
 ROOT_DIR = Path(__file__).resolve().parent
-DOWNLOADS_DIR = ROOT_DIR / "downloads"
-LOGS_DIR = ROOT_DIR / "logs"
+
+
+def is_checkout(root: Path) -> bool:
+    """True when the app runs from its source tree (a clone, or `pip install -e .`).
+
+    An installed copy (a wheel, `pip install .`) lives in site-packages: a
+    folder that is hard to find, vanishes with its venv and is often not
+    writable, and nobody keeps a `.env` there.
+    """
+    if {"site-packages", "dist-packages"} & set(root.parts):
+        return False
+    return (root / "pyproject.toml").is_file()
+
+
+# Where downloads, logs and `.env` live: the source tree when running from
+# one (the setup the README describes, and the downloads/ path OmniScan's
+# docs point at), else the folder `mangadl` was started in.
+DATA_DIR = ROOT_DIR if is_checkout(ROOT_DIR) else Path.cwd()
+DOWNLOADS_DIR = DATA_DIR / "downloads"
+LOGS_DIR = DATA_DIR / "logs"
+
+# The settings a `.env` outside the source tree may set. A folder the app is
+# merely started in is not trusted with the rest: a planted HTTPS_PROXY plus
+# SSL_CERT_FILE (both honored by httpx) would hand the mangago session to
+# whoever wrote that file.
+APP_ENV_PREFIXES = ("MANGAGO_", "MANGADEX_")
+
+
+def load_env(path: Path, *, trusted: bool) -> None:
+    """Load `path` into os.environ without overriding real environment variables.
+
+    Untrusted, only this app's own settings (APP_ENV_PREFIXES) are taken.
+    """
+    if trusted:
+        load_dotenv(path)
+        return
+    for key, value in dotenv_values(path).items():
+        if value is not None and key.startswith(APP_ENV_PREFIXES):
+            os.environ.setdefault(key, value)
+
 
 # Must run before driver discovery below: some drivers (e.g. mangago, which
 # needs a logged-in session cookie) read their own env vars whenever a
 # request is made, so those vars have to already be in os.environ by then.
-load_dotenv(ROOT_DIR / ".env")
+load_env(DATA_DIR / ".env", trusted=DATA_DIR == ROOT_DIR)
 
 # ---- conversion settings ---------------------------------------------------
 # Target format is always JPEG; non-JPEG downloads are converted after a run

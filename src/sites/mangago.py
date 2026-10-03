@@ -96,6 +96,19 @@ def _cookie_pairs(cookie: str) -> list[tuple[str, str]]:
     return pairs
 
 
+async def _launch_firefox(pw: Playwright) -> Browser:
+    """Start headless Firefox, or fail with one line that says how to install it.
+
+    Playwright's own message goes on to draw a box around its advice, which
+    the engine would print in full for every chapter of the run.
+    """
+    try:
+        return await pw.firefox.launch(headless=True)
+    except Exception as exc:
+        reason = (str(exc).strip().splitlines() or [type(exc).__name__])[0]
+        raise RuntimeError(f"Firefox will not start ({reason}): run `playwright install firefox` once") from exc
+
+
 def _parse_cookie_header(cookie: str) -> list[SetCookieParam]:
     return [
         {"name": name, "value": value, "domain": COOKIE_DOMAIN, "path": "/"} for name, value in _cookie_pairs(cookie)
@@ -209,20 +222,33 @@ class MangagoDriver(SiteDriver):
         doc = parse_html(resp.text)
 
         deduped: dict[float, str] = {}
+        skipped: list[str] = []
         for a in all_of(doc, _ROW_XPATH):
             href = attr(a, "href") or ""
             if not href:
                 continue
-            m = _LABEL_RE.search(stripped_text(a))
+            text = stripped_text(a)
+            m = _LABEL_RE.search(text)
             if not m:
+                skipped.append(text.split(":", 1)[0].strip() or text)
                 continue
             label = m.group(1)
             try:
                 num = float(label)
             except ValueError:
+                skipped.append(text)
                 continue
             deduped.setdefault(num, f"{href}#{label}")
 
+        if skipped:
+            # Side stories, specials and notices ("side.30", "Special.89.5",
+            # "notice.") carry no "Ch." number, and their own numbering would
+            # collide with the main chapters' num<N>_ folders. Say so rather
+            # than leave the listing short without a word.
+            more = " ..." if len(skipped) > 6 else ""
+            cwarning(
+                f"  mangago: left out {len(skipped)} row(s) without a chapter number: {', '.join(skipped[:6])}{more}"
+            )
         return [(url, num) for num, url in sorted(deduped.items())]
 
     async def _ensure_context(self) -> BrowserContext:
@@ -234,7 +260,7 @@ class MangagoDriver(SiteDriver):
                 pw = await async_playwright().start()
                 browser: Browser | None = None
                 try:
-                    browser = await pw.firefox.launch(headless=True)
+                    browser = await _launch_firefox(pw)
                     context = await browser.new_context()
                     await context.add_cookies(_parse_cookie_header(cookie))
                 except BaseException:

@@ -30,7 +30,10 @@ non-JPEG image to JPEG after each run.
   edit. `site_for_url()` matches by domain only (no network);
   `resolve_site()` does that first and, when nothing matches, fetches the
   page once with the plain client and offers it to every driver's `sniff()`
-  in descending `priority` — the first claimant wins.
+  in descending `priority` — the first claimant wins. It also picks
+  `DATA_DIR`, home of `downloads/`, `logs/` and `.env`: the source tree
+  when running from one (`is_checkout`), else the current working
+  directory, so an installed copy never writes into `site-packages`.
 - `src/base.py` — `SiteDriver` abstract base class. New drivers subclass it
   and implement: `base_url`, `classify`, `list_chapters`, `image_urls`,
   `folder_name` (plus the URL-classification helpers). `matches()` on the
@@ -54,7 +57,10 @@ non-JPEG image to JPEG after each run.
 - `term.py` — console output helpers (`cinfo`, `cwarning`, `cerror`, ...).
 - `src/sites/mgread.py` — mgread.io driver (page-scraped listing, pagination).
 - `src/sites/nelomanga.py` — nelomanga.net driver (JSON API + CDN URL pattern).
-- `src/sites/wfwf.py` — wfwf504.com driver (list pages, pagination).
+- `src/sites/wfwf.py` — 늑대닷컴 driver (list pages, pagination). The site
+  moves between numbered addresses (wfwf504.com, now wfwf510.com), so it
+  matches any `wfwf<N>.com` and builds URLs on the address it was given;
+  the key stays `wfwf504` so existing download folders still resume.
 - `src/sites/mangago.py` — mangago.me driver (logged-in session required;
   headless Playwright reads chapter image URLs the site encrypts
   client-side, see README.md "Why mangago needs an account"). Playwright

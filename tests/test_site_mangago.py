@@ -153,7 +153,7 @@ async def test_a_browser_that_will_not_start_does_not_leak_its_playwright_driver
     fresh = MangagoDriver()
 
     for _ in range(2):  # two chapters, each trying to start the browser
-        with pytest.raises(RuntimeError, match="Executable doesn't exist"):
+        with pytest.raises(RuntimeError, match=r"Executable doesn't exist.*playwright install firefox"):
             await fresh._ensure_context()
 
     assert calls == {"start": 2, "stop": 2}
@@ -176,3 +176,28 @@ async def test_download_series_url_passes_a_given_listing_through(tmp_path: Path
     with pytest.raises(RuntimeError, match="No chapters matched"):
         await MockedDriver().download_series_url(LIST_URL, tmp_path, chapters=[1], links=links)
     assert requested == []
+
+
+async def test_list_chapters_names_the_rows_it_leaves_out(mock_client, monkeypatch: pytest.MonkeyPatch):
+    """Side stories, specials and notices have no "Ch." number: left out, but never silently."""
+    rows = "".join(
+        f'<tr><td><a class="chico" href="{BASE}/read-manga/it_s_mine/uu/x-{i}/pg-1/"><b>{label}</b></a></td></tr>'
+        for i, label in enumerate(["Ch.2", "side.30  : Print Edition Special", "Special.89.5  : Special", "notice."])
+    )
+    html = f'<table id="chapter_table"><tbody>{rows}</tbody></table>'
+    warnings: list[str] = []
+    monkeypatch.setattr(mangago, "cwarning", warnings.append)
+
+    async with mock_client(lambda r: httpx.Response(200, text=html)) as client:
+        chapters = await driver.list_chapters(client, LIST_URL)
+
+    assert [num for _, num in chapters] == [2.0]
+    assert warnings == ["  mangago: left out 3 row(s) without a chapter number: side.30, Special.89.5, notice."]
+
+
+async def test_list_chapters_says_nothing_when_every_row_has_a_number(mock_client, monkeypatch: pytest.MonkeyPatch):
+    warnings: list[str] = []
+    monkeypatch.setattr(mangago, "cwarning", warnings.append)
+    async with mock_client(lambda r: httpx.Response(200, text=CHAPTER_TABLE_HTML)) as client:
+        await driver.list_chapters(client, LIST_URL)
+    assert warnings == []

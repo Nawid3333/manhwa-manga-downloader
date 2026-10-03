@@ -92,7 +92,10 @@ async def test_list_chapters_merges_pagination_and_sorts(mock_client):
     """
     second_page = '<div id="chapter-list"><a href="/manga/one-piece/chapter-2">Chapter 2</a></div>'
 
+    requested: list[str] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
         if str(request.url).endswith("/page/2/"):
             return httpx.Response(200, text=second_page)
         return httpx.Response(200, text=first_page)
@@ -101,3 +104,5 @@ async def test_list_chapters_merges_pagination_and_sorts(mock_client):
         chapters = await driver.list_chapters(client, LIST_URL)
 
     assert [num for _, num in chapters] == [1.0, 2.0]
+    # Page 1 of the list is the series page already in hand (#14).
+    assert sorted(requested) == ["/manga/one-piece", "/manga/one-piece/chapter/page/2/"]

@@ -6,8 +6,9 @@ and the image CDN are not. So this driver:
 1. lists chapters via /api/manga/{slug}/chapters?limit=50&offset=N
 2. builds CDN image URLs from the predictable pattern
      {host}/{series_slug}/{num}/{index}.webp   (0-based)
-   where fractional chapters use dotted folders (chapter-194-1 -> 194.1)
-   and trailing zeros are kept (chapter-179-0 -> 179.0, distinct from 179).
+   where fractional chapters use dotted folders (chapter-194-1 -> 194.1;
+   some slugs are dotted already, chapter-0.5 -> 0.5) and trailing zeros
+   are kept (chapter-179-0 -> 179.0, distinct from 179).
    Different chapters are served from different CDN hosts, so each chapter is
    probed against a host pool; the page count is found with a HEAD-request
    binary search (the reader HTML itself cannot be fetched without a browser).
@@ -31,15 +32,17 @@ PAGE_SIZE = 50
 HEAD_ATTEMPTS = 6
 
 # CDN hosts serving chapter images. Chapters live on different hosts, so we
-# probe the pool per chapter and use whichever host has the chapter.
+# probe the pool per chapter and use whichever host has the chapter. Ordered
+# by how many chapters each served in a sample of the live site (2026-10).
 CDN_HOSTS = (
     "https://img-r1.2xstorage.com",
+    "https://img-r2.2xstorage.com",
     "https://imgs-2.2xstorage.com",
 )
 IMG_REFERER = BASE + "/"
 
 _SLUG_RE = re.compile(r"^/manga/([^/]+)/?$")
-_CHAPTER_RE = re.compile(r"^/manga/[^/]+/chapter-([0-9]+(?:-[0-9]+)*)/?$")
+_CHAPTER_RE = re.compile(r"^/manga/[^/]+/chapter-([0-9]+(?:[-.][0-9]+)*)/?$")
 
 
 class NelomangaDriver(SiteDriver):
@@ -78,7 +81,7 @@ class NelomangaDriver(SiteDriver):
 
     @staticmethod
     def cdn_label(url: str) -> str | None:
-        """Raw CDN path label from the URL slug: chapter-194-1 -> '194.1' (trailing zeros kept)."""
+        """Raw CDN path label from the URL slug: chapter-194-1 and chapter-194.1 -> '194.1' (trailing zeros kept)."""
         m = _CHAPTER_RE.match(urlparse(url).path)
         if not m:
             return None

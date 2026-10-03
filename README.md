@@ -11,7 +11,7 @@ run.
 | ---------- | ----------------------------- | ------------------------------------------------------------ |
 | `mgread`   | mgread.io                     | paginated series listing, reader scraping                    |
 | `nelomanga`| nelomanga.net (MangaNelo)     | JSON chapter API + CDN URL pattern                           |
-| `wfwf504`  | wfwf504.com (늑대닷컴)         | list pages, pagination, per-chapter folders                  |
+| `wfwf504`  | wfwf510.com (늑대닷컴)         | any `wfwf<N>.com` address the site moves to; list pages, pagination |
 | `mangago`  | mangago.me                    | needs a logged-in session, see below                         |
 | `mangadex` | mangadex.org                  | official API; languages via `MANGADEX_LANGS`, see below      |
 | `madara`   | any Madara (WordPress theme) site | detected from the page, no fixed domains; covers hundreds of sites |
@@ -42,6 +42,30 @@ py -3.11 -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
+
+Run from this folder (`python main.py`, or `mangadl` after
+`pip install -e .`), downloads go to `downloads\` and logs to `logs\` here,
+and settings are read from `.env` here.
+
+A regular install (`pip install .`, or the wheel attached to each release)
+puts the code in `site-packages`, so `mangadl` uses the folder you start it
+in instead: `downloads\`, `logs\` and `.env` there. A `.env` there is only
+read for this app's own settings (`MANGAGO_*`, `MANGADEX_*`); anything else,
+such as a proxy, has to come from the real environment.
+
+### Long paths on Windows
+
+Series and chapter folder names can each be up to 180 characters, so a page
+path can pass Windows' default limit of 259 characters. A chapter that
+would cross it fails at once with a message saying so. To lift the limit,
+run once in an administrator PowerShell, then open a new terminal:
+
+```pwsh
+Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem LongPathsEnabled 1
+```
+
+Or pass a shorter `--out`. Programs that read the downloads, such as
+OmniScan, need long paths too to open those files.
 
 ## Why mangago needs an account
 
@@ -90,6 +114,11 @@ isolated by testing the identical request over HTTP/1.1, which works fine —
 so the driver's client forces HTTP/1.1 rather than needing a browser there
 too.
 
+Only rows of mangago's chapter table that carry a `Ch.` number are listed.
+Side stories, specials and notices (`side.30`, `Special.89.5`, `notice.`)
+have their own numbering, which would collide with the main chapters'
+folders, so they are left out; the run names the rows it left out.
+
 ## MangaDex
 
 The `mangadex` driver uses the official API (`api.mangadex.org`), not the
@@ -111,10 +140,14 @@ python main.py
 
 It lists the supported sites, asks for a series list URL (or a single
 chapter URL), shows how many chapters were found, then asks for a range
-(`1-10`, `5`, `1,3,5-7`, or `all`). After the download, non-JPEG images in
-the chapter folders that run wrote are converted to JPEG (quality 90) on all
-CPU cores; nothing else under the output directory is touched, so `--out`
-can safely point at a folder that already holds other files.
+(`1-10`, `5`, `1,3,5-7`, or `all`). An answer it cannot read, or one that
+matches no chapter, is asked again. A decimal selects its whole chapter:
+`12.5` selects chapter 12, which includes 12.5. The confirmation that
+follows says how many chapters will be downloaded. After the download,
+non-JPEG images in the chapter folders that run wrote are converted to JPEG
+(quality 90) on all CPU cores; nothing else under the output directory is
+touched, so `--out` can safely point at a folder that already holds other
+files.
 
 Output lands in `downloads/<site-key>/<series-slug>/<chapter-folder>/`.
 
@@ -127,9 +160,11 @@ python main.py <URL> [--chapters RANGE] [--out DIR] [--yes] [--json] [--no-conve
 ```
 
 - `--chapters RANGE` -- `all`, `5`, `1-10`, or a comma list like `1,3,5-7`.
-  Omitted: you are asked (or, with `--yes`, everything is downloaded).
+  A decimal selects its whole chapter (`12.5` means chapter 12 and its
+  `.x` chapters). Omitted: you are asked (or, with `--yes`, everything is
+  downloaded).
 - `--out DIR` -- output directory instead of `downloads/<site>/<series>`.
-- `--yes` / `-y` -- skip the "Start download?" confirmation.
+- `--yes` / `-y` -- skip the "Start download of N chapter(s)?" confirmation.
 - `--json` -- print exactly one JSON object to stdout when the run ends and
   send every other message to stderr, so a calling script can parse stdout
   (see "The `--json` result" below).
@@ -200,7 +235,10 @@ check:
 - Every downloaded file is verified with a full image decode (Pillow
   `Image.load()`, run off the event loop) before it's accepted — a dropped
   HTTP/2 stream or an overloaded CDN serving a truncated "200 OK" is caught
-  and retried instead of being silently kept as a corrupt page. The same
+  and retried instead of being silently kept as a corrupt page. An image
+  under 16 px on both sides (a tracking pixel or a "hotlink blocked"
+  placeholder) is refused too. The file's size in bytes is not a test: a
+  blank page can be under 100 bytes as WebP. The same
   check gates resume: an existing file from a previous run is only trusted
   if it still decodes cleanly. Resume also recognizes a file that was
   already converted to `.jpg` by a previous run's conversion pass, even
