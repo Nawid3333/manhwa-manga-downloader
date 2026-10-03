@@ -49,7 +49,9 @@ and settings are read from `.env` here.
 
 A regular install (`pip install .`, or the wheel attached to each release)
 puts the code in `site-packages`, so `mangadl` uses the folder you start it
-in instead: `downloads\`, `logs\` and `.env` there.
+in instead: `downloads\`, `logs\` and `.env` there. A `.env` there is only
+read for this app's own settings (`MANGAGO_*`, `MANGADEX_*`); anything else,
+such as a proxy, has to come from the real environment.
 
 ### Long paths on Windows
 
