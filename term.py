@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import sys
 from collections.abc import Mapping
 from datetime import datetime
@@ -207,6 +208,17 @@ def prompt_choice(prompt: str, choices: list[str]) -> str:
         cerror("Invalid choice. Please enter a number or exact label.")
 
 
+_CHAPTER_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _whole_chapter(text: str) -> int:
+    """The whole chapter number `text` names: '12' and '12.5' are both 12."""
+    text = text.strip()
+    if not _CHAPTER_NUMBER_RE.fullmatch(text):
+        raise ValueError(text)
+    return int(text.split(".", 1)[0])
+
+
 def parse_range(text: str, last: int, first: int = 1) -> list[int]:
     """Parse a chapter selection into sorted chapter numbers within first..last.
 
@@ -217,6 +229,8 @@ def parse_range(text: str, last: int, first: int = 1) -> list[int]:
     bounds are chapter *numbers* (what SiteDriver.select_chapters filters
     on), not positions in the listing: a series can start at chapter 0 or
     have gaps, so they come from the listing's lowest and highest number.
+    A decimal names the whole chapter it belongs to ('12.5' is 12), since
+    select_chapters matches on the whole number and so takes 12.5 with 12.
     """
     raw = text.strip().lower()
     if raw in ("all", "*", ""):
@@ -229,12 +243,12 @@ def parse_range(text: str, last: int, first: int = 1) -> list[int]:
         try:
             if "-" in part:
                 start_text, end_text = part.split("-", 1)
-                start, end = int(start_text), int(end_text)
+                start, end = _whole_chapter(start_text), _whole_chapter(end_text)
                 if start > end:
                     raise ValueError(part)
                 selected.update(range(max(first, start), min(last, end) + 1))
             else:
-                num = int(part)
+                num = _whole_chapter(part)
                 if first <= num <= last:
                     selected.add(num)
         except ValueError:
@@ -242,11 +256,30 @@ def parse_range(text: str, last: int, first: int = 1) -> list[int]:
     return sorted(selected)
 
 
+def note_whole_chapters(text: str) -> None:
+    """Say what a decimal in a chapter selection selects (see parse_range)."""
+    if "." in text:
+        cinfo("Selections are whole chapters: 12.5 selects chapter 12, with 12.5 and any other 12.x.")
+
+
 def prompt_range(last: int, first: int = 1) -> list[int]:
-    """Ask for a chapter range such as '1-10', '1,3,5-7', 'all', or a single number."""
-    raw = cinput(f"Which chapters? ({first}-{last}, range like 1-10, list like 1,3,5-7, or 'all'): ", color="yellow")
-    try:
-        return parse_range(raw, last, first)
-    except ValueError:
-        cwarning(f"Could not parse '{raw.strip()}' — downloading all chapters instead.")
-        return list(range(first, last + 1))
+    """Ask for a chapter range such as '1-10', '1,3,5-7', 'all', or a single number.
+
+    An answer that selects nothing, or is not a selection at all, is asked
+    again. Taking it as 'all' put a whole series one Enter away from a typo.
+    End of input still reads as "" and so as 'all', which ends the loop even
+    when stdin is not a terminal.
+    """
+    while True:
+        raw = cinput(
+            f"Which chapters? ({first}-{last}, range like 1-10, list like 1,3,5-7, or 'all'): ", color="yellow"
+        )
+        try:
+            selected = parse_range(raw, last, first)
+        except ValueError:
+            cwarning(f"Could not read '{raw.strip()}' as a chapter selection. Try again.")
+            continue
+        if selected:
+            note_whole_chapters(raw)
+            return selected
+        cwarning(f"No chapter in {first}-{last} matches '{raw.strip()}'. Try again.")

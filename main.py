@@ -49,6 +49,7 @@ from term import (
     cwarning,
     init_file_logging,
     list_sites_table,
+    note_whole_chapters,
     parse_range,
     pause,
     prompt_range,
@@ -164,13 +165,11 @@ def _select_chapters(args: argparse.Namespace, links: list[tuple[str, float]], i
             raise RunError(str(exc)) from None
         if not selected:
             raise RunError(f"No chapters in {first}-{last} match {args.chapters!r}.")
+        note_whole_chapters(args.chapters)
         return selected
     if args.yes and not interactive:
         return None
-    selected = prompt_range(last, first)
-    if not selected:
-        raise RunError("No chapters selected.")
-    return selected
+    return prompt_range(last, first)
 
 
 def _series_name(driver: Any, url: str) -> str | None:
@@ -250,7 +249,9 @@ def run(args: argparse.Namespace, *, interactive: bool) -> tuple[int, dict[str, 
 
         cinfo(f"Output directory: {target}")
         note_previous_incomplete(target)
-        if not args.yes and not cconfirm("Start download?", default=True):
+        # The count, so that one habitual Enter is not a surprise download of a whole series.
+        planned = 1 if links is None else len(driver.select_chapters(links, chapters))
+        if not args.yes and not cconfirm(f"Start download of {planned} chapter(s)?", default=True):
             cinfo("Aborted.")
             return EXIT_OK, _result(site, out_dir, None, None, series)
 

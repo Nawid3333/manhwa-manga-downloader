@@ -111,10 +111,14 @@ python main.py
 
 It lists the supported sites, asks for a series list URL (or a single
 chapter URL), shows how many chapters were found, then asks for a range
-(`1-10`, `5`, `1,3,5-7`, or `all`). After the download, non-JPEG images in
-the chapter folders that run wrote are converted to JPEG (quality 90) on all
-CPU cores; nothing else under the output directory is touched, so `--out`
-can safely point at a folder that already holds other files.
+(`1-10`, `5`, `1,3,5-7`, or `all`). An answer it cannot read, or one that
+matches no chapter, is asked again. A decimal selects its whole chapter:
+`12.5` selects chapter 12, which includes 12.5. The confirmation that
+follows says how many chapters will be downloaded. After the download,
+non-JPEG images in the chapter folders that run wrote are converted to JPEG
+(quality 90) on all CPU cores; nothing else under the output directory is
+touched, so `--out` can safely point at a folder that already holds other
+files.
 
 Output lands in `downloads/<site-key>/<series-slug>/<chapter-folder>/`.
 
@@ -127,9 +131,11 @@ python main.py <URL> [--chapters RANGE] [--out DIR] [--yes] [--json] [--no-conve
 ```
 
 - `--chapters RANGE` -- `all`, `5`, `1-10`, or a comma list like `1,3,5-7`.
-  Omitted: you are asked (or, with `--yes`, everything is downloaded).
+  A decimal selects its whole chapter (`12.5` means chapter 12 and its
+  `.x` chapters). Omitted: you are asked (or, with `--yes`, everything is
+  downloaded).
 - `--out DIR` -- output directory instead of `downloads/<site>/<series>`.
-- `--yes` / `-y` -- skip the "Start download?" confirmation.
+- `--yes` / `-y` -- skip the "Start download of N chapter(s)?" confirmation.
 - `--json` -- print exactly one JSON object to stdout when the run ends and
   send every other message to stderr, so a calling script can parse stdout
   (see "The `--json` result" below).

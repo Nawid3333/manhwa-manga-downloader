@@ -56,17 +56,46 @@ def test_parse_range_bounds_are_chapter_numbers(text: str, first: int, last: int
     assert parse_range(text, last, first) == expected
 
 
-@pytest.mark.parametrize("text", ["abc", "1-", "-3", "3-1", "1,x", "1..3"])
+@pytest.mark.parametrize("text", ["abc", "1-", "-3", "3-1", "1,x", "1..3", "1.2.3", "12.", ".5", "1e3", "nan"])
 def test_parse_range_rejects_garbage(text: str):
     with pytest.raises(ValueError):
         parse_range(text, 10)
 
 
-def test_prompt_range_falls_back_to_all_on_garbage(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(term, "cinput", lambda *a, **k: "nope")
-    assert term.prompt_range(3) == [1, 2, 3]
-    monkeypatch.setattr(term, "cinput", lambda *a, **k: "2,3")
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("12.5", [12]), ("10.5-12", [10, 11, 12]), ("3,12.5", [3, 12]), ("12-12.5", [12])],
+)
+def test_parse_range_takes_a_decimal_as_its_whole_chapter(text: str, expected: list[int]):
+    """select_chapters matches on int(num), so selecting 12 is what takes chapter 12.5."""
+    assert parse_range(text, 20) == expected
+
+
+def _answers(monkeypatch: pytest.MonkeyPatch, *answers: str) -> list[str]:
+    """Feed term.cinput the given answers in order (then end of input); returns the prompts it saw."""
+    queue = iter(answers)
+    prompts: list[str] = []
+
+    def fake_cinput(prompt: str, **kwargs) -> str:
+        prompts.append(prompt)
+        return next(queue, "")
+
+    monkeypatch.setattr(term, "cinput", fake_cinput)
+    return prompts
+
+
+@pytest.mark.parametrize("bad", ["nope", "1-10x", "5,,x", "99"])
+def test_prompt_range_asks_again_instead_of_taking_everything(monkeypatch: pytest.MonkeyPatch, bad: str):
+    prompts = _answers(monkeypatch, bad, "2,3")
     assert term.prompt_range(3) == [2, 3]
+    assert len(prompts) == 2
+
+
+def test_prompt_range_reads_end_of_input_as_all(monkeypatch: pytest.MonkeyPatch):
+    """cinput turns end of input into "": piped stdin ends the loop instead of spinning on it."""
+    prompts = _answers(monkeypatch, "nope")
+    assert term.prompt_range(3) == [1, 2, 3]
+    assert len(prompts) == 2
 
 
 # ---- argument parsing -------------------------------------------------------
@@ -385,6 +414,18 @@ def test_ctrl_c_at_the_chapter_prompt_aborts_instead_of_selecting_everything(
     monkeypatch.setattr("builtins.input", fake_input)
     code, _ = cli([], capsys=capsys)
     assert code == main.EXIT_ABORTED
+    assert not (tmp_path / "downloads" / "fake").exists()
+
+
+def test_interactive_typo_is_asked_again_and_the_confirmation_names_the_count(
+    cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    answers = iter(["https://fake.test/series", "1-2x", "2.5", "n"])
+    monkeypatch.setattr("builtins.input", lambda *args: next(answers, ""))
+    code, out = cli([], capsys=capsys, numbers=(1, 2, 2.5, 3))
+    assert code == 0
+    assert "Try again" in out.out
+    assert "Start download of 2 chapter(s)?" in out.out  # 2 and 2.5
     assert not (tmp_path / "downloads" / "fake").exists()
 
 
