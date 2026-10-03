@@ -400,6 +400,46 @@ def test_cinput_reads_end_of_input_as_empty_but_lets_ctrl_c_through(monkeypatch:
         term.cinput("? ")
 
 
+@pytest.fixture
+def windows_console(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Pretend stdin is a Windows console that has just hit end of input; returns the grace sleeps taken."""
+    slept: list[float] = []
+
+    def eof(*args):
+        raise EOFError
+
+    monkeypatch.setattr(term.sys, "platform", "win32")
+    monkeypatch.setattr(term, "_stdin_is_console", lambda: True)
+    monkeypatch.setattr("builtins.input", eof)
+    monkeypatch.setattr(term.time, "sleep", slept.append)
+    return slept
+
+
+def test_a_windows_ctrl_c_that_ends_input_first_still_aborts(windows_console, monkeypatch: pytest.MonkeyPatch):
+    """CPython can end input() at a Ctrl+C before the KeyboardInterrupt lands; it lands in the grace sleep."""
+
+    def interrupted(seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(term.time, "sleep", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        term.cinput("? ")
+    with pytest.raises(KeyboardInterrupt):
+        term.cconfirm("Start?")
+
+
+def test_real_end_of_input_at_a_windows_console_is_still_an_empty_answer(windows_console):
+    assert term.cinput("? ") == ""
+    assert term.cconfirm("Start?", default=False) is False
+    assert windows_console == [term._CTRL_C_GRACE, term._CTRL_C_GRACE]
+
+
+def test_piped_end_of_input_does_not_wait(windows_console, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(term, "_stdin_is_console", lambda: False)
+    assert term.cinput("? ") == ""
+    assert windows_console == []
+
+
 def test_ctrl_c_at_the_chapter_prompt_aborts_instead_of_selecting_everything(
     cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ):

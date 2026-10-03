@@ -14,6 +14,7 @@ import contextlib
 import logging
 import re
 import sys
+import time
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
@@ -76,6 +77,26 @@ def cprint(
         _plain_print(prefix + message)
 
 
+# A Ctrl+C at a Windows console can end input() as end of input and raise its
+# KeyboardInterrupt only afterwards: CPython waits just 100 ms for the signal,
+# and through Windows Terminal it can take longer (seen on Windows 11). End of
+# input at a console therefore waits this long for a Ctrl+C still on its way.
+_CTRL_C_GRACE = 0.5
+
+
+def _stdin_is_console() -> bool:
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (OSError, ValueError):  # closed or detached stdin
+        return False
+
+
+def _end_of_input() -> None:
+    """Called when a prompt meets end of input; raises KeyboardInterrupt when it was really a Ctrl+C."""
+    if sys.platform == "win32" and _stdin_is_console():
+        time.sleep(_CTRL_C_GRACE)  # a pending Ctrl+C is raised from here
+
+
 def cinput(prompt: str, *, color: str = "cyan") -> str:
     """Read a line of input with a colored prompt; end of input reads as an empty answer.
 
@@ -90,14 +111,18 @@ def cinput(prompt: str, *, color: str = "cyan") -> str:
     try:
         return input()
     except EOFError:
+        _end_of_input()
         return ""
 
 
 def cconfirm(prompt: str, default: bool = True) -> bool:
-    """Ask a yes/no question."""
+    """Ask a yes/no question; end of input answers with the default."""
     if _rich_ok and _console is not None:
         try:
             return Confirm.ask(Text(prompt, style="yellow"), default=default, console=_console)
+        except EOFError:
+            _end_of_input()
+            return default
         except Exception:
             pass
     suffix = " [Y/n]" if default else " [y/N]"
