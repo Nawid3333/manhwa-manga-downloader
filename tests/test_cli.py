@@ -373,6 +373,16 @@ def test_bad_range_and_empty_selection_exit_with_1(cli, tmp_path: Path, capsys):
     assert code == 1 and "No chapters" in json.loads(out.out)["error"]
 
 
+@pytest.mark.parametrize("raw", ["\x03", "https://fake.test/se ries", "https://fake.test/\x00x"])
+def test_resolve_input_refuses_control_characters_and_inner_spaces(raw: str):
+    url, err = main.resolve_input(raw)
+    assert url == "" and err is not None and "does not look like a valid URL" in err
+
+
+def test_resolve_input_adds_a_missing_scheme():
+    assert main.resolve_input("  fake.test/series \n") == ("https://fake.test/series", None)
+
+
 def test_invalid_url_exits_with_1(cli, capsys):
     code, out = cli(["ftp://example/x", "-y", "--json"], capsys=capsys)
     assert code == 1

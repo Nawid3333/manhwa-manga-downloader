@@ -79,6 +79,8 @@ def resolve_input(raw: str) -> tuple[str, str | None]:
     url = raw.strip()
     if not url:
         return "", "No URL given."
+    if any(ch.isspace() or not ch.isprintable() for ch in url):
+        return "", f"{raw.strip()!r} does not look like a valid URL."
     parsed = urlparse(url)
     if not parsed.scheme:
         url = "https://" + url
