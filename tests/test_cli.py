@@ -311,6 +311,37 @@ def test_non_json_run_prints_messages_to_stdout_and_no_json(cli, tmp_path: Path,
     assert "{" not in out.out.splitlines()[-1]
 
 
+def test_cinput_reads_end_of_input_as_empty_but_lets_ctrl_c_through(monkeypatch: pytest.MonkeyPatch):
+    def raise_(exc: BaseException):
+        def _input(*args):
+            raise exc
+
+        return _input
+
+    monkeypatch.setattr("builtins.input", raise_(EOFError()))
+    assert term.cinput("? ") == ""
+    monkeypatch.setattr("builtins.input", raise_(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        term.cinput("? ")
+
+
+def test_ctrl_c_at_the_chapter_prompt_aborts_instead_of_selecting_everything(
+    cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    answers = iter(["https://fake.test/series", KeyboardInterrupt()])
+
+    def fake_input(*args) -> str:
+        answer = next(answers, "")  # "" afterwards: Enter at any later prompt
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    code, _ = cli([], capsys=capsys)
+    assert code == main.EXIT_ABORTED
+    assert not (tmp_path / "downloads" / "fake").exists()
+
+
 def test_set_console_stream_routes_rich_and_plain_output(console_reset):
     import io
 

@@ -76,14 +76,19 @@ def cprint(
 
 
 def cinput(prompt: str, *, color: str = "cyan") -> str:
-    """Read a line of input with a colored prompt."""
+    """Read a line of input with a colored prompt; end of input reads as an empty answer.
+
+    Ctrl+C is not an answer: it propagates so the run aborts. Read as "",
+    it took each prompt's default instead -- at the chapter prompt that is
+    every chapter, one Enter away from starting the whole series.
+    """
     if _rich_ok and _console is not None:
         _console.print(Text(prompt, style=color), end="")
     else:
         _plain_print(prompt, end="")
     try:
         return input()
-    except (EOFError, KeyboardInterrupt):
+    except EOFError:
         return ""
 
 
