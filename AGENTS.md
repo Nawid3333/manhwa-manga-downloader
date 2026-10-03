@@ -40,6 +40,9 @@ non-JPEG image to JPEG after each run.
   (higher wins; specific markup above 0, the catch-all far below), plus
   `referer_for(url)` so requests carry the right origin without a fixed
   host. The engine passes `referer_for(url)` into `client()` for every run.
+  `main.run()` hands the listing it fetched for the range prompt to
+  `download_series_url(..., links=...)`, so a run reads a series' listing
+  once; a driver that overrides `download_series_url` must forward `links`.
 - `src/common.py` — shared HTTP client setup (limits, retries) and the
   generic downloader (`make_downloader`): concurrency-capped image fetching,
   `.part` atomic writes, resume logic with `_plausible_download` validation

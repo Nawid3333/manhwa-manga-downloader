@@ -203,6 +203,22 @@ def test_chapters_range_filters_the_listing(cli, tmp_path: Path, capsys):
     assert (out_dir / "ch2").exists() and not (out_dir / "ch1").exists()
 
 
+def test_series_listing_is_fetched_once_per_run(cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys):
+    """The listing read for the chapter count and range is the one the download uses."""
+    fetched: list[str] = []
+    original = FakeDriver.list_chapters
+
+    async def counting(self, client, url):
+        fetched.append(url)
+        return await original(self, client, url)
+
+    monkeypatch.setattr(FakeDriver, "list_chapters", counting)
+    argv = ["https://fake.test/series", "--chapters", "2", "--out", str(tmp_path / "out"), "-y", "--json"]
+    code, out = cli(argv, capsys=capsys)
+    assert code == 0 and json.loads(out.out)["complete_chapters"] == ["ch2"]
+    assert fetched == ["https://fake.test/series"]
+
+
 def test_chapters_selects_by_number_not_by_position(cli, tmp_path: Path, capsys):
     """A listing of 4 chapters numbered 0, 1, 150, 151: '150-151' and '0' must reach them."""
     out_dir = tmp_path / "out"

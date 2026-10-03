@@ -199,6 +199,7 @@ class MangaDexDriver(SiteDriver):
         out_dir: Path,
         chapters: list[int] | None = None,
         dry_run: bool = False,
+        links: list[tuple[str, float]] | None = None,
     ) -> dict[str, Any]:
         chapter_id = self.chapter_id(url)
         if chapter_id is not None and chapter_id not in self._numbers:
@@ -207,7 +208,7 @@ class MangaDexDriver(SiteDriver):
                     await self.remember_chapter(c, chapter_id)
                 except httpx.HTTPError as exc:
                     self.warn(f"Could not read chapter metadata ({exc}); folder will be unnumbered.")
-        return await super().download_series_url(url, out_dir, chapters=chapters, dry_run=dry_run)
+        return await super().download_series_url(url, out_dir, chapters=chapters, dry_run=dry_run, links=links)
 
 
 driver = MangaDexDriver()

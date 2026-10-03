@@ -148,3 +148,23 @@ async def test_download_series_url_raises_when_requested_range_matches_nothing(t
     driver = FakeDriver(lambda r: httpx.Response(200))
     with pytest.raises(RuntimeError, match="No chapters matched"):
         await driver.download_series_url("https://fake.test/list", tmp_path, chapters=[999])
+
+
+async def test_download_series_url_reuses_a_listing_it_is_given(tmp_path: Path, jpeg_bytes: bytes):
+    """main.py already fetched the listing for its prompt: the facade must not fetch it again."""
+
+    class NoListingDriver(FakeDriver):
+        async def list_chapters(self, client, url):
+            raise AssertionError("the listing was fetched a second time")
+
+    driver = NoListingDriver(_ok_handler(jpeg_bytes))
+    links = [("https://fake.test/chapter/1", 1.0), ("https://fake.test/chapter/2", 2.0)]
+    stats = await driver.download_series_url("https://fake.test/list", tmp_path, chapters=[2], links=links)
+    assert stats["complete_chapters"] == ["2"]
+    assert not (tmp_path / "1").exists()
+
+
+async def test_download_series_url_raises_when_the_given_listing_is_empty(tmp_path: Path):
+    driver = FakeDriver(lambda r: httpx.Response(200))
+    with pytest.raises(RuntimeError, match="No chapters found"):
+        await driver.download_series_url("https://fake.test/list", tmp_path, links=[])

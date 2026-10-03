@@ -287,9 +287,10 @@ class MangagoDriver(SiteDriver):
         out_dir: Path,
         chapters: list[int] | None = None,
         dry_run: bool = False,
+        links: list[tuple[str, float]] | None = None,
     ) -> dict[str, Any]:
         try:
-            return await super().download_series_url(url, out_dir, chapters, dry_run)
+            return await super().download_series_url(url, out_dir, chapters=chapters, dry_run=dry_run, links=links)
         finally:
             await self._close_browser()
 
