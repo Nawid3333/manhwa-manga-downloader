@@ -259,7 +259,8 @@ async def test_list_chapters_keeps_dotted_slugs(mock_client):
 
 
 async def test_image_urls_finds_a_chapter_on_any_host_of_the_pool(mock_client):
-    assert "https://img-r2.2xstorage.com" in CDN_HOSTS  # served a quarter of the chapters in a live sample
+    # img-r2 served a quarter of the chapters in a live sample, second only to img-r1.
+    assert CDN_HOSTS[1] == "https://img-r2.2xstorage.com"
     for host in CDN_HOSTS:
         async with mock_client(_cdn_handler(host, page_count=3)) as client:
             urls = await driver.image_urls(client, CHAPTER_URL)
