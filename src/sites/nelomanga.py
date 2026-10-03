@@ -39,7 +39,7 @@ CDN_HOSTS = (
 IMG_REFERER = BASE + "/"
 
 _SLUG_RE = re.compile(r"^/manga/([^/]+)/?$")
-_CHAPTER_RE = re.compile(r"^/manga/[^/]+/chapter-([0-9]+(?:-[0-9]+)*)$")
+_CHAPTER_RE = re.compile(r"^/manga/[^/]+/chapter-([0-9]+(?:-[0-9]+)*)/?$")
 
 
 class NelomangaDriver(SiteDriver):
@@ -134,8 +134,9 @@ class NelomangaDriver(SiteDriver):
             url = f"{BASE}/manga/{slug}/{ch_slug}"
             # Only slugs the CDN pattern can serve (chapter-12, chapter-194-1);
             # one like "chapter-extra" has no number to build a URL from, and
-            # float() on it would fail the whole listing.
-            if ch_slug and self.is_chapter_url(url):
+            # neither does "chapter-12-1-2" (12.1.2): float() on either would
+            # fail the whole listing.
+            if ch_slug and self.chapter_num(url) is not None:
                 deduped.setdefault(ch_slug.removeprefix("chapter-").replace("-", "."), url)
         return [(url, float(label)) for label, url in sorted(deduped.items(), key=lambda p: (float(p[0]), p[0]))]
 
