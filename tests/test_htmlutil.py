@@ -16,6 +16,20 @@ def test_parse_html_parses_valid_markup():
     assert first(doc, "//p[@id='a']") is not None
 
 
+def test_parse_html_accepts_an_xhtml_page_with_an_encoding_declaration():
+    """lxml raises ValueError for a str that declares its encoding; such a page must still parse."""
+    html = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><body><a href="/c/1">Ch 1</a></body></html>'
+    )
+    doc = parse_html(html)
+    assert attr(first(doc, "//a"), "href") == "/c/1"
+
+
+def test_parse_html_xml_declaration_only_parses_to_nothing():
+    assert all_of(parse_html('<?xml version="1.0" encoding="UTF-8"?>'), "//a") == []
+
+
 def test_first_and_all_of_handle_none_doc():
     assert first(None, "//p") is None
     assert all_of(None, "//p") == []
